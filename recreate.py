@@ -7,12 +7,14 @@
    
 from __future__ import annotations
 
+import copy
 import csv
 import itertools
 import json
 import math
 import random
 import statistics
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
@@ -27,8 +29,9 @@ CONFIG = {
     "cities_including_depot": 18,
     "seeds": list(range(10)),
     "depot_city": "Coimbatore",
-                                                                            
-                                                                          
+    "enable_infrastructure": True,
+    "enable_pack3d": True,
+    "enable_traffic": True,
     "synthetic_city_radius_km": 22.0,
                                                                        
     "cost_rate_scale": 1.16,
@@ -100,10 +103,11 @@ def haversine(a, b):
     return 2 * r * math.asin(math.sqrt(h)) * CONFIG["road_distance_factor"]
 
 
-def make_instance(seed: int):
+def make_instance(seed: int, order_count: int | None = None):
     rng = random.Random(seed)
     cities = CONFIG["cities"]
     depot = cities[0]
+    count = CONFIG["orders"] if order_count is None else order_count
                                                                           
                                                                           
                                                                             
@@ -115,7 +119,7 @@ def make_instance(seed: int):
         centers.append((center_lat + radius * math.cos(theta) / 111.0,
                         center_lon + radius * math.sin(theta) / (111.0 * math.cos(math.radians(center_lat)))))
     orders = []
-    for i in range(CONFIG["orders"]):
+    for i in range(count):
         ci = rng.randrange(1, len(cities))
         lat0, lon0 = centers[ci]
         lat = lat0 + rng.uniform(-.003, .003)
@@ -148,6 +152,8 @@ def service_minutes(o: Order, rng: random.Random):
 
 
 def travel_hours(km: float, vehicle, departure_h: float):
+    if not CONFIG.get("enable_traffic", True):
+        return km / vehicle["speed"]
     band = "rush_morning" if 7 <= departure_h < 10 else "rush_evening" if 16 <= departure_h < 19 else "night" if departure_h >= 21 or departure_h < 6 else "midday"
     mult = CONFIG["traffic"][band] * CONFIG["weather_factor"] * CONFIG["lane_factor"]
     return km / vehicle["speed"] * mult
@@ -166,7 +172,8 @@ def seven_cost(distance, vehicle, late_days, flagged):
 
 
 def pack3d(route, vehicle, orders):
-                                                                                
+    if not CONFIG.get("enable_pack3d", True):
+        return True
     free = [vehicle["bay"]]
     boxes = sorted(((orders[i].box_l_m, orders[i].box_w_m, orders[i].box_h_m)
                     for i in route), key=lambda b: b[0] * b[1] * b[2], reverse=True)
@@ -201,6 +208,8 @@ def infrastructure_rule(a, b):
 
 
 def infrastructure_feasible(route, vehicle, orders):
+    if not CONFIG.get("enable_infrastructure", True):
+        return True
     cities = [0] + [orders[i].city for i in route] + [0]
     for a, b in zip(cities, cities[1:]):
         rule = infrastructure_rule(a, b)
@@ -358,6 +367,92 @@ def order_crossover(a, b, rng):
     rest = [x for x in b if x not in child]
     it = iter(rest)
     return [next(it) if x is None else x for x in child]
+
+
+def write_csv(name, rows):
+    if rows:
+        with (OUT / name).open("w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=list(rows[0]))
+            w.writeheader(); w.writerows(rows)
+
+
+def summarize_stats(rows, key):
+    vals = [float(r[key]) for r in rows if r.get(key) is not None]
+    if not vals:
+        return {"mean": None, "sd": None, "min": None, "max": None}
+    return {
+        "mean": statistics.mean(vals),
+        "sd": statistics.stdev(vals) if len(vals) > 1 else 0.0,
+        "min": min(vals),
+        "max": max(vals),
+    }
+
+
+def run_ablation_experiments():
+    variants = [
+        ("baseline", {}),
+        ("no_infrastructure", {"enable_infrastructure": False}),
+        ("no_traffic", {"enable_traffic": False, "traffic": {"rush_morning": 1.0, "rush_evening": 1.0, "midday": 1.0, "night": 1.0}, "weather_factor": 1.0, "lane_factor": 1.0}),
+        ("no_penalties", {"late_rate_rs_per_day": 0.0, "packaging_rs_flagged": 0.0, "penalty_deadline_h": 999.0}),
+    ]
+    rows = []
+    original = copy.deepcopy(CONFIG)
+    for variant_name, overrides in variants:
+        for k, v in overrides.items():
+            CONFIG[k] = copy.deepcopy(v)
+        for seed in CONFIG["seeds"][:3]:
+            orders, d = make_instance(seed)
+            candidate = candidate_runs(orders, d, seed)
+            best = min(candidate, key=lambda r: r["cost_rs"])
+            rows.append({
+                "variant": variant_name,
+                "seed": seed,
+                "best_cost_rs": best["cost_rs"],
+                "best_distance_km": best["distance_km"],
+                "best_penalty_rs": best["penalty_rs"],
+                "best_ontime_pct": best["ontime_pct"],
+                "best_algorithm": best["heuristic"],
+                "runtime_s": 0.0,
+            })
+    CONFIG.clear(); CONFIG.update(original)
+    return rows
+
+
+def run_scalability_experiments():
+    sizes = [20, 30, 50, 80]
+    seeds = [11, 22]
+    rows = []
+    for size in sizes:
+        for seed in seeds:
+            orders, d = make_instance(seed, order_count=size)
+            t0 = time.perf_counter()
+            base = ortools_baseline(orders, d, seed, seconds=1)
+            runtime = time.perf_counter() - t0
+            rows.append({
+                "n_orders": size,
+                "seed": seed,
+                "algorithm": "OR-Tools",
+                "cost_rs": base.get("cost_rs"),
+                "distance_km": base.get("distance_km"),
+                "penalty_rs": base.get("penalty_rs"),
+                "ontime_pct": base.get("ontime_pct"),
+                "runtime_s": runtime,
+            })
+            t0 = time.perf_counter()
+            meta = metaheuristic_runs(orders, d, seed)
+            runtime = time.perf_counter() - t0
+            for algo in meta:
+                rows.append({
+                    "n_orders": size,
+                    "seed": seed,
+                    "algorithm": algo["algorithm"],
+                    "cost_rs": algo["cost_rs"],
+                    "distance_km": algo["distance_km"],
+                    "penalty_rs": algo["penalty_rs"],
+                    "ontime_pct": algo["ontime_pct"],
+                    "runtime_s": runtime,
+                })
+    return rows
 
 
 def metaheuristic_runs(orders, d, seed):
@@ -535,11 +630,10 @@ def main():
               f"{best['distance_km']:.1f} km, penalty Rs {best['penalty_rs']:.0f}, "
               f"on-time {best['ontime_pct']:.1f}%; OR-Tools={base['status']} "
               f"Rs {base['cost_rs']}")
-    def write_csv(name, rows):
-        if rows:
-            with (OUT / name).open("w", newline="", encoding="utf-8") as f:
-                w = csv.DictWriter(f, fieldnames=list(rows[0]))
-                w.writeheader(); w.writerows(rows)
+    ablation_rows = run_ablation_experiments()
+    scalability_rows = run_scalability_experiments()
+    write_csv("ablation_summary.csv", ablation_rows)
+    write_csv("scalability_summary.csv", scalability_rows)
     with (DATA / "synthetic_30_orders.csv").open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(instance_rows[0]))
         w.writeheader(); w.writerows(instance_rows)
@@ -580,7 +674,21 @@ def main():
                "metaheuristics": {name: {key: {"mean": statistics.mean(float(r[key]) for r in meta_rows if r["algorithm"] == name),
                                                        "sd": statistics.stdev(float(r[key]) for r in meta_rows if r["algorithm"] == name)}
                                                 for key in ("cost_rs", "distance_km", "penalty_rs", "ontime_pct")}
-                                   for name in ("ALNS", "Genetic Algorithm", "Tabu Search")}}
+                                   for name in ("ALNS", "Genetic Algorithm", "Tabu Search")},
+               "ablation": {
+                   variant: {key: summarize_stats([r for r in ablation_rows if r["variant"] == variant], key)
+                             for key in ("best_cost_rs", "best_distance_km", "best_penalty_rs", "best_ontime_pct")}
+                   for variant in sorted({r["variant"] for r in ablation_rows})
+               },
+               "scalability": {
+                   str(size): {
+                       "n_orders": size,
+                       "avg_runtime_s": statistics.mean(float(r["runtime_s"]) for r in scalability_rows if r["n_orders"] == size),
+                       "avg_cost_rs": statistics.mean(float(r["cost_rs"]) for r in scalability_rows if r["n_orders"] == size and r["cost_rs"] is not None),
+                       "avg_distance_km": statistics.mean(float(r["distance_km"]) for r in scalability_rows if r["n_orders"] == size and r["distance_km"] is not None),
+                       "algorithms": sorted({r["algorithm"] for r in scalability_rows if r["n_orders"] == size}),
+                   } for size in sorted({r["n_orders"] for r in scalability_rows})
+               }}
     (OUT / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print("Wrote", OUT)
     print(json.dumps(summary, indent=2))

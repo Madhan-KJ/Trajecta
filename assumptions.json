@@ -14,6 +14,9 @@
     9
   ],
   "depot_city": "Coimbatore",
+  "enable_infrastructure": true,
+  "enable_pack3d": true,
+  "enable_traffic": true,
   "synthetic_city_radius_km": 22.0,
   "cost_rate_scale": 1.16,
   "due_offset_hours": [
