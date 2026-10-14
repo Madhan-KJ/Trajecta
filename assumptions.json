@@ -129,6 +129,7 @@
     8.0
   ],
   "penalty_deadline_h": 22.0,
+  "t_base": 8.0,
   "service_base_min": 8.0,
   "service_min_per_kg": 0.05,
   "service_min_per_m3": 5.0,
@@ -149,8 +150,24 @@
     "midday": 1.05,
     "night": 0.9
   },
+  "gamma": 1.0,
+  "delta": 1.0,
   "weather_factor": 1.0,
   "lane_factor": 1.0,
+  "skill_distribution": {
+    "two_wheeler": {
+      "count": 2,
+      "share": 0.2857142857142857
+    },
+    "four_wheeler": {
+      "count": 3,
+      "share": 0.42857142857142855
+    },
+    "truck": {
+      "count": 2,
+      "share": 0.2857142857142857
+    }
+  },
   "assumed_route_groups": 4,
   "ortools_seconds": 2,
   "metaheuristic_iterations": 10,

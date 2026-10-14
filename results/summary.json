@@ -27,26 +27,26 @@
   },
   "ortools_same_cost_model": {
     "cost_rs": {
-      "mean": 1916.047437197252,
-      "sd": 298.3706226954334
+      "mean": 1816.8508256590917,
+      "sd": 257.45370437845685
     },
     "solver_objective_rs": {
-      "mean": 1653.5,
-      "sd": 201.92219152082177
+      "mean": 1597.142857142857,
+      "sd": 181.63097071757758
     },
     "distance_km": {
-      "mean": 222.49004618702406,
-      "sd": 20.436831164723728
+      "mean": 218.3278483496883,
+      "sd": 19.541108212070814
     },
     "penalty_rs": {
       "mean": 0.0,
       "sd": 0.0
     },
     "ontime_pct": {
-      "mean": 93.33333333333334,
-      "sd": 4.714045207910317
+      "mean": 91.90476190476191,
+      "sd": 3.779644730092273
     },
-    "n_solved": 8
+    "n_solved": 7
   },
   "metaheuristics": {
     "ALNS": {
@@ -213,9 +213,9 @@
   "scalability": {
     "20": {
       "n_orders": 20,
-      "avg_runtime_s": 1.5448210750003,
-      "avg_cost_rs": 3281.275280973366,
-      "avg_distance_km": 371.57261750466284,
+      "avg_runtime_s": 0.7922323499997219,
+      "avg_cost_rs": 3288.094835997801,
+      "avg_distance_km": 373.04234919096353,
       "algorithms": [
         "ALNS",
         "Genetic Algorithm",
@@ -225,7 +225,7 @@
     },
     "30": {
       "n_orders": 30,
-      "avg_runtime_s": 1.9375297499998396,
+      "avg_runtime_s": 0.954590287499741,
       "avg_cost_rs": 4549.210548237131,
       "avg_distance_km": 514.4362919844783,
       "algorithms": [
@@ -237,7 +237,7 @@
     },
     "50": {
       "n_orders": 50,
-      "avg_runtime_s": 3.149217987500606,
+      "avg_runtime_s": 1.3145731500007969,
       "avg_cost_rs": 6909.076283358055,
       "avg_distance_km": 760.7586417405836,
       "algorithms": [
@@ -249,7 +249,7 @@
     },
     "80": {
       "n_orders": 80,
-      "avg_runtime_s": 4.656039737500123,
+      "avg_runtime_s": 1.8911737499997798,
       "avg_cost_rs": Infinity,
       "avg_distance_km": 151.29889748547606,
       "algorithms": [

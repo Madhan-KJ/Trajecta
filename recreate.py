@@ -51,6 +51,8 @@ CONFIG = {
     "road_distance_factor": 1.18,
     "weight_kg": [4, 55], "volume_m3": [0.015, 0.24],
     "window_hours": [3.0, 8.0], "penalty_deadline_h": 22.0,
+    # Theoretical aliases retained for terminology alignment without changing the model.
+    "t_base": 8.0,
     "service_base_min": 8.0,
     "service_min_per_kg": 0.05, "service_min_per_m3": 5.0,
     "service_noise_sd_min": 2.0, "late_rate_rs_per_day": 100.0,
@@ -59,7 +61,15 @@ CONFIG = {
     "fuel_or_energy_rs_per_km": {"petrol": 4.5, "diesel": 7.0, "electric": 1.1},
     "traffic": {"rush_morning": 1.30, "rush_evening": 1.25,
                 "midday": 1.05, "night": 0.90},
+    # Theoretical aliases for the route-time multipliers used by the synthetic model.
+    "gamma": 1.0,
+    "delta": 1.0,
     "weather_factor": 1.0, "lane_factor": 1.0,
+    "skill_distribution": {
+        "two_wheeler": {"count": 2, "share": 2 / 7},
+        "four_wheeler": {"count": 3, "share": 3 / 7},
+        "truck": {"count": 2, "share": 2 / 7},
+    },
     "assumed_route_groups": 4,
     "ortools_seconds": 2,
     "metaheuristic_iterations": 10,
@@ -146,7 +156,8 @@ def make_instance(seed: int, order_count: int | None = None):
 
 def service_minutes(o: Order, rng: random.Random):
     flags = 4.0 * o.fragile + 6.0 * o.cooling
-    return max(2.0, CONFIG["service_base_min"] + CONFIG["service_min_per_kg"] * o.weight
+    t_base = CONFIG.get("t_base", CONFIG.get("service_base_min", 8.0))
+    return max(2.0, t_base + CONFIG["service_min_per_kg"] * o.weight
                + CONFIG["service_min_per_m3"] * o.volume + flags
                + rng.gauss(0, CONFIG["service_noise_sd_min"]))
 
@@ -155,7 +166,9 @@ def travel_hours(km: float, vehicle, departure_h: float):
     if not CONFIG.get("enable_traffic", True):
         return km / vehicle["speed"]
     band = "rush_morning" if 7 <= departure_h < 10 else "rush_evening" if 16 <= departure_h < 19 else "night" if departure_h >= 21 or departure_h < 6 else "midday"
-    mult = CONFIG["traffic"][band] * CONFIG["weather_factor"] * CONFIG["lane_factor"]
+    gamma = CONFIG.get("gamma", CONFIG.get("weather_factor", 1.0))
+    delta = CONFIG.get("delta", CONFIG.get("lane_factor", 1.0))
+    mult = CONFIG["traffic"][band] * gamma * delta
     return km / vehicle["speed"] * mult
 
 
