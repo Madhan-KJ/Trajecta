@@ -1,0 +1,321 @@
+{
+  "fleet_types": [
+    {
+      "type": "2W-Petrol",
+      "weight_capacity_kg": 35,
+      "volume_capacity_m3": 0.18,
+      "speed_km_per_h": 34,
+      "bay_dimensions_m": [
+        0.55,
+        0.45,
+        0.4
+      ],
+      "height_m": 1.5,
+      "lane_factor": 1.0,
+      "fuel_type": "petrol",
+      "fuel_rs_per_km": 4.5,
+      "ev_kwh_per_km": 0,
+      "fixed_route_cost_rs": 0,
+      "wage_rs_per_km": 2.0,
+      "maintenance_rs_per_km": 0.55,
+      "range_km": null,
+      "toll_rs_per_route": 10.0,
+      "availability": "vehicle type only; not an inventory count"
+    },
+    {
+      "type": "2W-EV",
+      "weight_capacity_kg": 30,
+      "volume_capacity_m3": 0.16,
+      "speed_km_per_h": 32,
+      "bay_dimensions_m": [
+        0.55,
+        0.45,
+        0.4
+      ],
+      "height_m": 1.6,
+      "lane_factor": 1.0,
+      "fuel_type": "electric",
+      "fuel_rs_per_km": 0.0,
+      "ev_kwh_per_km": 0.1,
+      "fixed_route_cost_rs": 0,
+      "wage_rs_per_km": 2.0,
+      "maintenance_rs_per_km": 0.55,
+      "range_km": null,
+      "toll_rs_per_route": 10.0,
+      "availability": "vehicle type only; not an inventory count"
+    },
+    {
+      "type": "4W-Petrol",
+      "weight_capacity_kg": 350,
+      "volume_capacity_m3": 2.5,
+      "speed_km_per_h": 42,
+      "bay_dimensions_m": [
+        2.0,
+        1.35,
+        0.95
+      ],
+      "height_m": 2.0,
+      "lane_factor": 1.0,
+      "fuel_type": "petrol",
+      "fuel_rs_per_km": 4.5,
+      "ev_kwh_per_km": 0,
+      "fixed_route_cost_rs": 70,
+      "wage_rs_per_km": 2.0,
+      "maintenance_rs_per_km": 0.55,
+      "range_km": null,
+      "toll_rs_per_route": 30.0,
+      "availability": "vehicle type only; not an inventory count"
+    },
+    {
+      "type": "4W-Diesel",
+      "weight_capacity_kg": 700,
+      "volume_capacity_m3": 5.5,
+      "speed_km_per_h": 40,
+      "bay_dimensions_m": [
+        2.5,
+        1.55,
+        1.35
+      ],
+      "height_m": 2.3,
+      "lane_factor": 1.0,
+      "fuel_type": "diesel",
+      "fuel_rs_per_km": 7.0,
+      "ev_kwh_per_km": 0,
+      "fixed_route_cost_rs": 100,
+      "wage_rs_per_km": 2.0,
+      "maintenance_rs_per_km": 0.55,
+      "range_km": null,
+      "toll_rs_per_route": 30.0,
+      "availability": "vehicle type only; not an inventory count"
+    },
+    {
+      "type": "4W-EV",
+      "weight_capacity_kg": 400,
+      "volume_capacity_m3": 3.0,
+      "speed_km_per_h": 38,
+      "bay_dimensions_m": [
+        2.1,
+        1.4,
+        1.05
+      ],
+      "height_m": 2.1,
+      "lane_factor": 1.0,
+      "fuel_type": "electric",
+      "fuel_rs_per_km": 0.0,
+      "ev_kwh_per_km": 0.1,
+      "fixed_route_cost_rs": 65,
+      "wage_rs_per_km": 2.0,
+      "maintenance_rs_per_km": 0.55,
+      "range_km": null,
+      "toll_rs_per_route": 30.0,
+      "availability": "vehicle type only; not an inventory count"
+    },
+    {
+      "type": "Truck-Diesel",
+      "weight_capacity_kg": 4000,
+      "volume_capacity_m3": 25,
+      "speed_km_per_h": 35,
+      "bay_dimensions_m": [
+        6.0,
+        2.2,
+        2.0
+      ],
+      "height_m": 3.6,
+      "lane_factor": 1.0,
+      "fuel_type": "diesel",
+      "fuel_rs_per_km": 7.0,
+      "ev_kwh_per_km": 0,
+      "fixed_route_cost_rs": 180,
+      "wage_rs_per_km": 2.0,
+      "maintenance_rs_per_km": 0.55,
+      "range_km": null,
+      "toll_rs_per_route": 60.0,
+      "availability": "vehicle type only; not an inventory count"
+    },
+    {
+      "type": "Truck-EV",
+      "weight_capacity_kg": 2500,
+      "volume_capacity_m3": 18,
+      "speed_km_per_h": 33,
+      "bay_dimensions_m": [
+        5.0,
+        2.0,
+        1.8
+      ],
+      "height_m": 3.2,
+      "lane_factor": 1.0,
+      "fuel_type": "electric",
+      "fuel_rs_per_km": 0.0,
+      "ev_kwh_per_km": 0.1,
+      "fixed_route_cost_rs": 160,
+      "wage_rs_per_km": 2.0,
+      "maintenance_rs_per_km": 0.55,
+      "range_km": null,
+      "toll_rs_per_route": 60.0,
+      "availability": "vehicle type only; not an inventory count"
+    }
+  ],
+  "cost_components": [
+    {
+      "component": "fuel",
+      "formula": "distance * fuel rate * terrain factor",
+      "unit": "Rs"
+    },
+    {
+      "component": "wages",
+      "formula": "distance * wage rate + fixed vehicle route cost",
+      "unit": "Rs"
+    },
+    {
+      "component": "late penalty",
+      "formula": "late days * daily rate",
+      "unit": "Rs"
+    },
+    {
+      "component": "packaging",
+      "formula": "fragile order count * packaging rate",
+      "unit": "Rs"
+    },
+    {
+      "component": "cooling",
+      "formula": "cooling order count * cooling rate",
+      "unit": "Rs"
+    },
+    {
+      "component": "maintenance",
+      "formula": "distance * maintenance rate",
+      "unit": "Rs"
+    },
+    {
+      "component": "tolls",
+      "formula": "flat class-based charge per active route",
+      "unit": "Rs; synthetic assumption"
+    },
+    {
+      "component": "EV charging",
+      "formula": "distance * kWh/km * tariff",
+      "unit": "Rs"
+    }
+  ],
+  "cost_rates": {
+    "cost_rate_scale": 1.16,
+    "late_rate_rs_per_day": 100.0,
+    "packaging_rs_per_order": 25.0,
+    "cooling_rs_per_order": 10.0,
+    "wage_rs_per_km": 2.0,
+    "maintenance_rs_per_km": 0.55,
+    "terrain_gradient_factor": 1.0,
+    "electric_consumption_kwh_per_km": 0.1,
+    "charging_tariff_rs_per_kwh": 3.5,
+    "fuel_rs_per_km": {
+      "petrol": 4.5,
+      "diesel": 7.0,
+      "electric": 0.0
+    },
+    "toll_rs_by_vehicle_class": {
+      "two_wheeler": 10.0,
+      "four_wheeler": 30.0,
+      "truck": 60.0
+    }
+  },
+  "traffic": {
+    "bands": {
+      "rush_morning": {
+        "hours": "07:00-10:00",
+        "multiplier": 1.3
+      },
+      "rush_evening": {
+        "hours": "16:00-19:00",
+        "multiplier": 1.25
+      },
+      "midday": {
+        "hours": "10:00-16:00 and 19:00-21:00",
+        "multiplier": 1.05
+      },
+      "night": {
+        "hours": "21:00-06:00",
+        "multiplier": 0.9
+      }
+    },
+    "other_hours": "midday default, including 06:00-07:00",
+    "weather_multiplier": 1.0,
+    "lane_multiplier": 1.0,
+    "origin": "synthetic assumptions; not calibrated against observed traffic"
+  },
+  "service_time": {
+    "formula": "t_base + alpha*weight + beta*volume + gamma*(fragile+cooling) + delta*skill",
+    "t_base_min": 8.0,
+    "alpha_min_per_kg": 0.05,
+    "beta_min_per_m3": 5.0,
+    "gamma_min": 5.0,
+    "delta": 1.0,
+    "skill_distribution": {
+      "mean_min": 0.0,
+      "sd_min": 2.0
+    },
+    "skill_draw": "one deterministic normal draw per order and seed"
+  },
+  "synthetic_generator": {
+    "weight_kg": {
+      "distribution": "uniform",
+      "range": [
+        4,
+        55
+      ]
+    },
+    "volume_m3": {
+      "distribution": "uniform",
+      "range": [
+        0.015,
+        0.24
+      ]
+    },
+    "city_assignment": "uniform discrete over non-depot configured cities",
+    "coordinate_jitter_degrees": {
+      "distribution": "uniform",
+      "range": [
+        -0.003,
+        0.003
+      ]
+    },
+    "arrival_hour": {
+      "distribution": "uniform",
+      "range": [
+        6,
+        10
+      ]
+    },
+    "due_hour": "min(22, 8 + uniform(due_offset_hours)); offsets are uniform",
+    "fragile_probability": 0.15,
+    "cooling_probability": 0.2,
+    "penalty_risk": {
+      "distribution": "uniform",
+      "range": [
+        0,
+        1
+      ]
+    },
+    "distance_matrix": "Haversine, Earth radius 6371 km, multiplied by road_distance_factor",
+    "route_group_count": 4,
+    "route_groups_source": "synthetic assumption"
+  },
+  "infrastructure": {
+    "source": "synthetic rule, not mapped road data",
+    "two_wheeler_forbidden": "(a+b) % 13 == 0",
+    "max_payload_kg_500": "(a*31+b*17) % 29 == 0",
+    "max_height_m_2_4": "(a*11+b*7) % 31 == 0"
+  },
+  "packing": {
+    "algorithm": "descending-volume first-fit into residual rectangular spaces; test all six box orientations",
+    "limitations": "heuristic, not an optimal 3D packing solver"
+  },
+  "selection": {
+    "objective_candidates": [
+      "minimum cost",
+      "minimum distance",
+      "minimum penalty"
+    ],
+    "tie_break": "objective metric, then cost, distance, penalty, split index, heuristic order",
+    "pareto_definition": "non-dominated over cost, distance, and penalty; finite candidates only"
+  }
+}

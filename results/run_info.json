@@ -1,0 +1,93 @@
+{
+  "run_command": "python recreate.py",
+  "python": "3.12.9",
+  "os": "Windows-11-10.0.26300-SP0",
+  "cpu": "AMD64 Family 25 Model 80 Stepping 0, AuthenticAMD",
+  "logical_cpu_count": 12,
+  "ram_bytes": 16539553792,
+  "package_versions": {
+    "ortools": "9.15.6755",
+    "numpy": "2.3.5",
+    "pandas": "3.0.1",
+    "scipy": "1.18.1",
+    "matplotlib": "3.11.2"
+  },
+  "git_hash": "46c40c24599a11b3128a94c6d5b7524ec983e615",
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ],
+  "experiment_seeds": {
+    "main": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "ablation": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "scalability": [
+      11,
+      22
+    ],
+    "varied_instances": [
+      0,
+      1,
+      2
+    ],
+    "optimality_gap": [
+      0,
+      1,
+      2
+    ],
+    "benchmark": [
+      11,
+      22,
+      33
+    ]
+  },
+  "orders": 30,
+  "candidate_count_per_seed": 56,
+  "ortools_time_limit_seconds": 2,
+  "scalability_ortools_time_limit_seconds": 1,
+  "fleet_type_count": 7,
+  "available_vehicle_types": [
+    "2W-Petrol",
+    "2W-EV",
+    "4W-Petrol",
+    "4W-Diesel",
+    "4W-EV",
+    "Truck-Diesel",
+    "Truck-EV"
+  ],
+  "route_group_assumption": 4,
+  "metaheuristic_iterations": 10,
+  "ortools_first_solution": "PATH_CHEAPEST_ARC",
+  "ortools_local_search": "GUIDED_LOCAL_SEARCH",
+  "ortools_seven_factor_traffic_approximation": 1.15,
+  "optimality_gap_order_count": 7
+}

@@ -1,0 +1,24 @@
+{
+  "all_three_objectives_coincide_seeds": 3,
+  "n_seeds": 10,
+  "pairwise_objective_coincidences": {
+    "min_cost_min_distance": 9,
+    "min_cost_min_penalty": 4,
+    "min_distance_min_penalty": 3
+  },
+  "pareto_candidates_per_seed_mean": 1.9,
+  "pareto_candidates_per_seed_sd": 0.7378647873726218,
+  "pareto_candidates_per_seed": [
+    3,
+    3,
+    1,
+    2,
+    1,
+    1,
+    2,
+    2,
+    2,
+    2
+  ],
+  "tie_break": "objective metric, then cost, distance, penalty, split index, heuristic order"
+}

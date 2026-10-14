@@ -17,6 +17,9 @@
   "enable_infrastructure": true,
   "enable_pack3d": true,
   "enable_traffic": true,
+  "enable_dbscan_split": true,
+  "enable_penalty_risk_split": true,
+  "enable_stochastic_service": true,
   "city_coordinate_jitter_degrees": 0.003,
   "distance_matrix_formula": "Haversine, Earth radius 6371 km, multiplied by road_distance_factor",
   "cost_rate_scale": 1.16,
@@ -127,10 +130,6 @@
     0.015,
     0.24
   ],
-  "window_hours": [
-    3.0,
-    8.0
-  ],
   "penalty_deadline_h": 22.0,
   "t_base": 8.0,
   "gamma": 5.0,
@@ -149,6 +148,7 @@
     "four_wheeler": 30.0,
     "truck": 60.0
   },
+  "toll_model": "flat class-based charge per active route (synthetic assumption)",
   "wage_rs_per_km": 2.0,
   "maintenance_rs_per_km": 0.55,
   "terrain_gradient_factor": 1.0,
@@ -183,6 +183,7 @@
     }
   },
   "assumed_route_groups": 4,
+  "fleet_type_limit": 7,
   "ortools_seconds": 2,
   "metaheuristic_iterations": 10,
   "fleet": [
