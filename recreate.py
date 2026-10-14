@@ -141,7 +141,7 @@ def make_instance(seed: int, order_count: int | None = None):
         lat = lat0 + rng.uniform(-.003, .003)
         lon = lon0 + rng.uniform(-.003, .003)
         arrival = rng.uniform(6, 10)
-        due = min(22, 8.0 + rng.uniform(*CONFIG["due_offset_hours"]))
+        due = 8.0 + rng.uniform(*CONFIG["due_offset_hours"])
         weight = rng.uniform(*CONFIG["weight_kg"])
         volume = rng.uniform(*CONFIG["volume_m3"])
         fragile, cooling = rng.random() < .15, rng.random() < .20
@@ -269,7 +269,7 @@ def score_route(route, vehicle, orders, d, seed, objective="full"):
         ontime += clock <= o.due_h
                                                                          
                                                                             
-        late_days += max(0, math.ceil((clock - CONFIG["penalty_deadline_h"]) / 24.0))
+        late_days += max(0, math.ceil((clock - o.due_h) / 24.0))
         flagged += int(o.fragile or o.cooling)
         prev = idx + 1
     distance += d[prev][0]
@@ -797,13 +797,13 @@ def ortools_baseline(orders, d, seed, seconds=None):
         model.AddExactlyOne(choices)
 
     objective_terms = []
-    late_cutoff = int(CONFIG["penalty_deadline_h"] * 3600)
     late_rate = int(round(CONFIG["late_rate_rs_per_day"] * CONFIG["cost_rate_scale"] * cost_scale))
     for oi, order in enumerate(orders, start=1):
+        due_cutoff = int(round(order.due_h * 3600))
         for day in range(7):
             late = model.NewBoolVar(f"late_{oi}_{day}")
             late_vars[oi, day] = late
-            threshold = late_cutoff + day * 24 * 60 * 60 + 1
+            threshold = due_cutoff + day * 24 * 60 * 60 + 1
             model.Add(times[oi] >= threshold).OnlyEnforceIf(late)
             model.Add(times[oi] <= threshold - 1).OnlyEnforceIf(late.Not())
             objective_terms.append(late_rate * late)
@@ -910,7 +910,8 @@ def ortools_baseline(orders, d, seed, seconds=None):
             ))
             model.AddHint(both, int(active and hinted_bands.get(i) == bi))
         for (order_index, day), late in late_vars.items():
-            threshold = late_cutoff + day * 24 * 60 * 60 + 1
+            due_cutoff = int(round(orders[order_index - 1].due_h * 3600))
+            threshold = due_cutoff + day * 24 * 60 * 60 + 1
             model.AddHint(late, int(hinted_times.get(order_index, 0) >= threshold))
     deadline = started + time_limit
     packing_cuts = 0
