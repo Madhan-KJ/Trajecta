@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Callable
 
 from ortools.constraint_solver import pywrapcp, routing_enums_pb2
+from ortools.sat.python import cp_model
 
 HERE = Path(__file__).resolve().parent
 OUT = HERE / "results"
@@ -71,7 +72,7 @@ CONFIG = {
         "truck": {"count": 2, "share": 2 / 7},
     },
     "assumed_route_groups": 4,
-    "ortools_seconds": 2,
+    "ortools_seconds": 10,
     "metaheuristic_iterations": 10,
 }
 
@@ -154,22 +155,24 @@ def make_instance(seed: int, order_count: int | None = None):
     return orders, d
 
 
-def service_minutes(o: Order, rng: random.Random):
+def service_minutes(o: Order, seed: int):
     flags = 4.0 * o.fragile + 6.0 * o.cooling
     t_base = CONFIG.get("t_base", CONFIG.get("service_base_min", 8.0))
-    return max(2.0, t_base + CONFIG["service_min_per_kg"] * o.weight
-               + CONFIG["service_min_per_m3"] * o.volume + flags
-               + rng.gauss(0, CONFIG["service_noise_sd_min"]))
+    rng = random.Random(seed * 1009 + (o.oid + 1) * 9176)
+    minutes = max(2.0, t_base + CONFIG["service_min_per_kg"] * o.weight
+                  + CONFIG["service_min_per_m3"] * o.volume + flags
+                  + rng.gauss(0, CONFIG["service_noise_sd_min"]))
+    return round(minutes * 60) / 60
 
 
 def travel_hours(km: float, vehicle, departure_h: float):
     if not CONFIG.get("enable_traffic", True):
-        return km / vehicle["speed"]
+        return round(km / vehicle["speed"] * 3600) / 3600
     band = "rush_morning" if 7 <= departure_h < 10 else "rush_evening" if 16 <= departure_h < 19 else "night" if departure_h >= 21 or departure_h < 6 else "midday"
     gamma = CONFIG.get("gamma", CONFIG.get("weather_factor", 1.0))
     delta = CONFIG.get("delta", CONFIG.get("lane_factor", 1.0))
     mult = CONFIG["traffic"][band] * gamma * delta
-    return km / vehicle["speed"] * mult
+    return round(km / vehicle["speed"] * mult * 3600) / 3600
 
 
 def seven_cost(distance, vehicle, late_days, flagged):
@@ -249,7 +252,6 @@ def score_route(route, vehicle, orders, d, seed, objective="full"):
     distance = 0.0
     late_days = 0.0
     flagged = 0
-    rng = random.Random(seed * 1009 + sum((i + 1) * (j + 3) for j, i in enumerate(route)))
     prev = 0
     ontime = 0
     for idx in route:
@@ -257,7 +259,7 @@ def score_route(route, vehicle, orders, d, seed, objective="full"):
         km = d[prev][idx + 1]
         distance += km
         clock += travel_hours(km, vehicle, clock)
-        clock += service_minutes(o, rng) / 60.0
+        clock += service_minutes(o, seed) / 60.0
         ontime += clock <= o.due_h
                                                                          
                                                                             
@@ -390,7 +392,8 @@ def write_csv(name, rows):
 
 
 def summarize_stats(rows, key):
-    vals = [float(r[key]) for r in rows if r.get(key) is not None]
+    vals = [float(r[key]) for r in rows
+            if r.get(key) is not None and math.isfinite(float(r[key]))]
     if not vals:
         return {"mean": None, "sd": None, "min": None, "max": None}
     return {
@@ -439,7 +442,7 @@ def run_scalability_experiments():
         for seed in seeds:
             orders, d = make_instance(seed, order_count=size)
             t0 = time.perf_counter()
-            base = ortools_baseline(orders, d, seed, seconds=1)
+            base = ortools_baseline(orders, d, seed, seconds=CONFIG["ortools_seconds"])
             runtime = time.perf_counter() - t0
             rows.append({
                 "n_orders": size,
@@ -540,7 +543,7 @@ def metaheuristic_runs(orders, d, seed):
     return rows
 
 
-def ortools_baseline(orders, d, seed, seconds=None):
+def _legacy_ortools_baseline(orders, d, seed, seconds=None):
     n, nv = len(orders), len(FLEET)
     manager = pywrapcp.RoutingIndexManager(n + 1, nv, 0)
     routing = pywrapcp.RoutingModel(manager)
@@ -623,6 +626,278 @@ def ortools_baseline(orders, d, seed, seconds=None):
             "ontime_pct": 100 * ontime / max(1, served) if math.isfinite(evaluated_cost) else None}
 
 
+def ortools_baseline(orders, d, seed, seconds=None):
+    started = time.perf_counter()
+    n, nv = len(orders), len(FLEET)
+    horizon = 7 * 24 * 60 * 60
+    time_big_m = horizon + 24 * 60 * 60
+    distance_scale = 1_000_000
+    cost_scale = 1_000_000_000
+    time_limit = CONFIG["ortools_seconds"] if seconds is None else seconds
+    service_seconds = [int(round(service_minutes(o, seed) * 60)) for o in orders]
+    distance_units = [[int(round(km * distance_scale)) for km in row] for row in d]
+    model = cp_model.CpModel()
+
+    arcs = {}
+    skipped = {}
+    used = []
+    depot_loops = {}
+    tolls = {}
+    late_vars = {}
+    for vi in range(nv):
+        vehicle_arcs = []
+        for i in range(n + 1):
+            for j in range(n + 1):
+                if i == j:
+                    continue
+                arc = model.NewBoolVar(f"arc_{vi}_{i}_{j}")
+                arcs[vi, i, j] = arc
+                vehicle_arcs.append((i, j, arc))
+        depot_loop = model.NewBoolVar(f"depot_loop_{vi}")
+        depot_loops[vi] = depot_loop
+        used.append(model.NewBoolVar(f"used_{vi}"))
+        model.Add(used[vi] + depot_loop == 1)
+        vehicle_arcs.append((0, 0, depot_loop))
+        for i in range(1, n + 1):
+            skipped[vi, i] = model.NewBoolVar(f"skip_{vi}_{i}")
+            vehicle_arcs.append((i, i, skipped[vi, i]))
+        model.AddCircuit(vehicle_arcs)
+
+    for i in range(1, n + 1):
+        model.Add(sum(skipped[vi, i] for vi in range(nv)) == nv - 1)
+    for vi, vehicle in enumerate(FLEET):
+        model.Add(sum(int(round(orders[i - 1].weight * 1000)) * (1 - skipped[vi, i])
+                      for i in range(1, n + 1)) <= int(vehicle["weight"] * 1000))
+        model.Add(sum(int(round(orders[i - 1].volume * 1_000_000)) * (1 - skipped[vi, i])
+                      for i in range(1, n + 1)) <= int(vehicle["volume"] * 1_000_000))
+
+    for vi, vehicle in enumerate(FLEET):
+        for i in range(n + 1):
+            city_a = 0 if i == 0 else orders[i - 1].city
+            for j in range(n + 1):
+                if i == j:
+                    continue
+                city_b = 0 if j == 0 else orders[j - 1].city
+                rule = infrastructure_rule(city_a, city_b) if CONFIG.get("enable_infrastructure", True) else None
+                if not rule:
+                    continue
+                blocked = (
+                    rule.get("two_wheeler_allowed") is False and vehicle["name"].startswith("2W")
+                ) or vehicle["weight"] > rule.get("max_payload_kg", math.inf) \
+                    or vehicle["height"] > rule.get("max_vehicle_height_m", math.inf)
+                if blocked:
+                    model.Add(arcs[vi, i, j] == 0)
+
+    times = [model.NewIntVar(0, horizon, f"time_{i}") for i in range(n + 1)]
+    model.Add(times[0] == 8 * 60 * 60)
+    traffic = CONFIG["traffic"]
+    gamma = CONFIG.get("gamma", CONFIG.get("weather_factor", 1.0))
+    delta = CONFIG.get("delta", CONFIG.get("lane_factor", 1.0))
+    intervals = [
+        (0, 6 * 3600 - 1, "night"),
+        (6 * 3600, 7 * 3600 - 1, "midday"),
+        (7 * 3600, 10 * 3600 - 1, "rush_morning"),
+        (10 * 3600, 16 * 3600 - 1, "midday"),
+        (16 * 3600, 19 * 3600 - 1, "rush_evening"),
+        (19 * 3600, 21 * 3600 - 1, "midday"),
+        (21 * 3600, horizon, "night"),
+    ]
+    bands = {}
+    arc_band_vars = {}
+    for i in range(1, n + 1):
+        choices = []
+        for bi, (lo, hi, _) in enumerate(intervals):
+            choice = model.NewBoolVar(f"band_{i}_{bi}")
+            bands[i, bi] = choice
+            choices.append(choice)
+            model.Add(times[i] >= lo).OnlyEnforceIf(choice)
+            model.Add(times[i] <= hi).OnlyEnforceIf(choice)
+        model.AddExactlyOne(choices)
+
+    objective_terms = []
+    late_cutoff = int(CONFIG["penalty_deadline_h"] * 3600)
+    late_rate = int(round(CONFIG["late_rate_rs_per_day"] * CONFIG["cost_rate_scale"] * cost_scale))
+    for oi, order in enumerate(orders, start=1):
+        for day in range(7):
+            late = model.NewBoolVar(f"late_{oi}_{day}")
+            late_vars[oi, day] = late
+            threshold = late_cutoff + day * 24 * 60 * 60 + 1
+            model.Add(times[oi] >= threshold).OnlyEnforceIf(late)
+            model.Add(times[oi] <= threshold - 1).OnlyEnforceIf(late.Not())
+            objective_terms.append(late_rate * late)
+        if order.fragile or order.cooling:
+            objective_terms.append(int(round(CONFIG["packaging_rs_flagged"] * CONFIG["cost_rate_scale"] * cost_scale)))
+
+    toll_distance = 40 * distance_scale
+    max_arc_distance = max(max(row) for row in distance_units)
+    max_route_distance = max_arc_distance * (n + 1)
+    toll_cost = int(round(CONFIG["toll_rs_route"] * CONFIG["cost_rate_scale"] * cost_scale))
+    fixed_costs = []
+    for vi, vehicle in enumerate(FLEET):
+        route_distance = sum(distance_units[i][j] * arcs[vi, i, j]
+                             for i in range(n + 1) for j in range(n + 1) if i != j)
+        toll = model.NewBoolVar(f"toll_{vi}")
+        tolls[vi] = toll
+        model.Add(route_distance <= toll_distance + max_route_distance * toll)
+        model.Add(route_distance >= (toll_distance + 1) * toll)
+        objective_terms.append(toll_cost * toll)
+        fixed_cost = int(round(vehicle["fixed"] * CONFIG["cost_rate_scale"] * cost_scale))
+        fixed_costs.append(fixed_cost * used[vi])
+
+        energy_rate = CONFIG["fuel_or_energy_rs_per_km"][vehicle["kind"]]
+        distance_rate = energy_rate + CONFIG["wage_rs_per_km"] + CONFIG["maintenance_rs_per_km"]
+        if vehicle["kind"] == "electric":
+            distance_rate += 0.35
+        distance_coefficient = int(round(distance_rate * CONFIG["cost_rate_scale"] * 1000))
+        objective_terms.append(distance_coefficient * route_distance)
+
+    objective_terms.extend(fixed_costs)
+    for vi, vehicle in enumerate(FLEET):
+        for i in range(1, n + 1):
+            for j in range(1, n + 1):
+                if i == j:
+                    continue
+                arc = arcs[vi, i, j]
+                selected = []
+                travel_by_band = []
+                km = d[i][j]
+                for bi, (_, _, band_name) in enumerate(intervals):
+                    both = model.NewBoolVar(f"arc_band_{vi}_{i}_{j}_{bi}")
+                    arc_band_vars[vi, i, j, bi] = both
+                    model.Add(both <= arc)
+                    model.Add(both <= bands[i, bi])
+                    model.Add(both >= arc + bands[i, bi] - 1)
+                    selected.append(both)
+                    multiplier = traffic[band_name] * gamma * delta if CONFIG.get("enable_traffic", True) else 1.0
+                    travel_seconds = int(round(km / vehicle["speed"] * multiplier * 3600))
+                    travel_by_band.append(travel_seconds * both)
+                duration = sum(travel_by_band) + service_seconds[j - 1]
+                model.Add(sum(selected) == arc)
+                model.Add(times[j] >= times[i] + duration - time_big_m * (1 - arc))
+                model.Add(times[j] <= times[i] + duration + time_big_m * (1 - arc))
+            first_arc = arcs[vi, 0, i]
+            multiplier = traffic["rush_morning"] * gamma * delta if CONFIG.get("enable_traffic", True) else 1.0
+            first_travel = int(round(d[0][i] / vehicle["speed"] * multiplier * 3600))
+            first_duration = first_travel + service_seconds[i - 1]
+            model.Add(times[i] >= times[0] + first_duration - time_big_m * (1 - first_arc))
+            model.Add(times[i] <= times[0] + first_duration + time_big_m * (1 - first_arc))
+
+    model.Minimize(sum(objective_terms))
+
+    initial_groups = make_splits(orders, d)[0]
+    initial_routes = [make_routes(group, orders, d, "NN", seed) for group in initial_groups]
+    initial_cost, initial_assignment, _ = assign_vehicles(initial_routes, orders, d, seed)
+    if math.isfinite(initial_cost):
+        hinted_routes = {vi: [] for vi in range(nv)}
+        for route, vi in zip(initial_routes, initial_assignment):
+            hinted_routes[vi] = route
+        hinted_bands = {}
+        hinted_times = {}
+        for vi, route in hinted_routes.items():
+            path = [0] + [node + 1 for node in route] + ([0] if route else [])
+            selected_arcs = set(zip(path, path[1:]))
+            visited = {node + 1 for node in route}
+            model.AddHint(used[vi], int(bool(route)))
+            model.AddHint(depot_loops[vi], int(not route))
+            for i in range(1, n + 1):
+                model.AddHint(skipped[vi, i], int(i not in visited))
+            for key, arc in arcs.items():
+                if key[0] == vi:
+                    model.AddHint(arc, int(key[1:] in selected_arcs))
+            clock = 8 * 3600
+            previous = 0
+            for node in route:
+                order_index = node + 1
+                distance = d[previous][order_index]
+                clock += int(round(travel_hours(distance, FLEET[vi], clock / 3600) * 3600))
+                clock += service_seconds[node]
+                hinted_times[order_index] = clock
+                model.AddHint(times[order_index], clock)
+                band_index = next(bi for bi, (lo, hi, _) in enumerate(intervals) if lo <= clock <= hi)
+                hinted_bands[order_index] = band_index
+                for bi in range(len(intervals)):
+                    model.AddHint(bands[order_index, bi], int(bi == band_index))
+                previous = order_index
+            route_distance = sum(distance_units[i][j] for i, j in selected_arcs)
+            model.AddHint(tolls[vi], int(route_distance > toll_distance))
+
+        for (vi, i, j, bi), both in arc_band_vars.items():
+            active = (i, j) in set(zip(
+                [0] + [node + 1 for node in hinted_routes[vi]],
+                [node + 1 for node in hinted_routes[vi]] + ([0] if hinted_routes[vi] else []),
+            ))
+            model.AddHint(both, int(active and hinted_bands.get(i) == bi))
+        for (order_index, day), late in late_vars.items():
+            threshold = late_cutoff + day * 24 * 60 * 60 + 1
+            model.AddHint(late, int(hinted_times.get(order_index, 0) >= threshold))
+    deadline = started + time_limit
+    packing_cuts = 0
+    while True:
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            return {"status": "time_limit_no_feasible_route", "cost_rs": None,
+                    "solver_objective_rs": None, "objective_bound_rs": None,
+                    "optimality_gap_pct": None, "distance_km": None,
+                    "penalty_rs": None, "ontime_pct": None,
+                    "runtime_s": time.perf_counter() - started, "packing_cuts": packing_cuts}
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = remaining
+        solver.parameters.num_search_workers = 1
+        solver.parameters.cp_model_presolve = False
+        solver.parameters.linearization_level = 0
+        status = solver.Solve(model)
+        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            return {"status": solver.StatusName(status), "cost_rs": None,
+                    "solver_objective_rs": None, "objective_bound_rs": None,
+                    "optimality_gap_pct": None, "distance_km": None,
+                    "penalty_rs": None, "ontime_pct": None,
+                    "runtime_s": time.perf_counter() - started, "packing_cuts": packing_cuts}
+
+        routes = []
+        invalid_cuts = []
+        for vi, vehicle in enumerate(FLEET):
+            route = []
+            node = 0
+            while True:
+                next_node = next((j for j in range(n + 1) if j != node and solver.Value(arcs[vi, node, j])), None)
+                if next_node is None or next_node == 0:
+                    break
+                route.append(next_node - 1)
+                node = next_node
+            if route:
+                routes.append((vi, route))
+                if not pack3d(route, vehicle, orders):
+                    path = [0] + [order_id + 1 for order_id in route] + [0]
+                    invalid_cuts.append([arcs[vi, a, b] for a, b in zip(path, path[1:])])
+        if invalid_cuts:
+            for cut in invalid_cuts:
+                model.Add(sum(cut) <= len(cut) - 1)
+                packing_cuts += 1
+            continue
+
+        results = [score_route(route, FLEET[vi], orders, d, seed) for vi, route in routes]
+        if any(not math.isfinite(result[0]) for result in results):
+            for (vi, route), result in zip(routes, results):
+                if not math.isfinite(result[0]):
+                    path = [0] + [order_id + 1 for order_id in route] + [0]
+                    model.Add(sum(arcs[vi, a, b] for a, b in zip(path, path[1:])) <= len(path) - 2)
+                    packing_cuts += 1
+            continue
+
+        evaluated_cost = sum(result[0] for result in results)
+        distance = sum(result[1] for result in results)
+        penalty = sum(result[2] for result in results)
+        ontime = sum(result[3] * len(route) for (_, route), result in zip(routes, results)) / n
+        objective = solver.ObjectiveValue() / cost_scale
+        bound = solver.BestObjectiveBound() / cost_scale
+        gap = 100 * max(0.0, objective - bound) / max(abs(objective), 1e-9)
+        return {"status": solver.StatusName(status), "cost_rs": evaluated_cost,
+                "solver_objective_rs": objective, "objective_bound_rs": bound,
+                "optimality_gap_pct": gap, "distance_km": distance,
+                "penalty_rs": penalty, "ontime_pct": ontime,
+                "runtime_s": time.perf_counter() - started, "packing_cuts": packing_cuts}
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     DATA = HERE / "datasets"
@@ -673,17 +948,24 @@ def main():
     baseline_solved = [r for r in base_rows if r["cost_rs"] is not None]
     def baseline_stats(key):
         vals = [float(r[key]) for r in baseline_solved if r[key] is not None]
+        if not vals:
+            return {"mean": None, "sd": None}
         return {"mean": statistics.mean(vals), "sd": statistics.stdev(vals) if len(vals)>1 else 0}
     summary = {"status": "synthetic_scenario_summary",
                "n_seeds": len(CONFIG["seeds"]), "candidate_best_cost_rs": stats("cost_rs"),
                "candidate_distance_km": stats("distance_km"),
                "candidate_penalty_rs": stats("penalty_rs"), "candidate_ontime_pct": stats("ontime_pct"),
-               "ortools_same_cost_model": {"cost_rs": baseline_stats("cost_rs"),
+               "ortools_shared_model": {"cost_rs": baseline_stats("cost_rs"),
                    "solver_objective_rs": baseline_stats("solver_objective_rs"),
+                   "objective_bound_rs": baseline_stats("objective_bound_rs"),
+                   "optimality_gap_pct": baseline_stats("optimality_gap_pct"),
                    "distance_km": baseline_stats("distance_km"),
                    "penalty_rs": baseline_stats("penalty_rs"),
                    "ontime_pct": baseline_stats("ontime_pct"),
-                   "n_solved": len(baseline_solved)},
+                   "n_solved": len(baseline_solved),
+                   "n_runs": len(base_rows),
+                   "statuses": {status: sum(row["status"] == status for row in base_rows)
+                                for status in sorted({row["status"] for row in base_rows})}},
                "metaheuristics": {name: {key: {"mean": statistics.mean(float(r[key]) for r in meta_rows if r["algorithm"] == name),
                                                        "sd": statistics.stdev(float(r[key]) for r in meta_rows if r["algorithm"] == name)}
                                                 for key in ("cost_rs", "distance_km", "penalty_rs", "ontime_pct")}
@@ -697,8 +979,8 @@ def main():
                    str(size): {
                        "n_orders": size,
                        "avg_runtime_s": statistics.mean(float(r["runtime_s"]) for r in scalability_rows if r["n_orders"] == size),
-                       "avg_cost_rs": statistics.mean(float(r["cost_rs"]) for r in scalability_rows if r["n_orders"] == size and r["cost_rs"] is not None),
-                       "avg_distance_km": statistics.mean(float(r["distance_km"]) for r in scalability_rows if r["n_orders"] == size and r["distance_km"] is not None),
+                       "avg_cost_rs": summarize_stats([r for r in scalability_rows if r["n_orders"] == size], "cost_rs")["mean"],
+                       "avg_distance_km": summarize_stats([r for r in scalability_rows if r["n_orders"] == size], "distance_km")["mean"],
                        "algorithms": sorted({r["algorithm"] for r in scalability_rows if r["n_orders"] == size}),
                    } for size in sorted({r["n_orders"] for r in scalability_rows})
                }}

@@ -169,7 +169,7 @@
     }
   },
   "assumed_route_groups": 4,
-  "ortools_seconds": 2,
+  "ortools_seconds": 10,
   "metaheuristic_iterations": 10,
   "fleet": [
     {
