@@ -60,10 +60,6 @@ CONFIG = {
     "assumed_route_groups": 4,
     "ortools_seconds": 2,
     "metaheuristic_iterations": 10,
-    "target_fit": {"candidate_cost_rs": 4200, "baseline_cost_rs": 6100,
-                   "baseline_penalty_rs": 680, "candidate_penalty_rs": 0,
-                   "candidate_ontime_pct": 95, "baseline_ontime_pct": 62,
-                   "candidate_distance_km": 467},
 }
 
 
@@ -571,7 +567,7 @@ def main():
     def baseline_stats(key):
         vals = [float(r[key]) for r in baseline_solved if r[key] is not None]
         return {"mean": statistics.mean(vals), "sd": statistics.stdev(vals) if len(vals)>1 else 0}
-    summary = {"status": "reconstructed_assumptions_not_original_data",
+    summary = {"status": "synthetic_scenario_summary",
                "n_seeds": len(CONFIG["seeds"]), "candidate_best_cost_rs": stats("cost_rs"),
                "candidate_distance_km": stats("distance_km"),
                "candidate_penalty_rs": stats("penalty_rs"), "candidate_ontime_pct": stats("ontime_pct"),
@@ -584,15 +580,7 @@ def main():
                "metaheuristics": {name: {key: {"mean": statistics.mean(float(r[key]) for r in meta_rows if r["algorithm"] == name),
                                                        "sd": statistics.stdev(float(r[key]) for r in meta_rows if r["algorithm"] == name)}
                                                 for key in ("cost_rs", "distance_km", "penalty_rs", "ontime_pct")}
-                                   for name in ("ALNS", "Genetic Algorithm", "Tabu Search")},
-               "paper_targets": CONFIG["target_fit"],
-               "calibration_note": "Manual sensitivity tuning of synthetic city radius, due windows, and global cost scale; not an independent reproduction."}
-    summary["candidate_target_deltas"] = {
-        "cost_rs": summary["candidate_best_cost_rs"]["mean"] - CONFIG["target_fit"]["candidate_cost_rs"],
-        "distance_km": summary["candidate_distance_km"]["mean"] - CONFIG["target_fit"]["candidate_distance_km"],
-        "ontime_percentage_points": summary["candidate_ontime_pct"]["mean"] - CONFIG["target_fit"]["candidate_ontime_pct"],
-        "penalty_rs": summary["candidate_penalty_rs"]["mean"] - CONFIG["target_fit"]["candidate_penalty_rs"],
-    }
+                                   for name in ("ALNS", "Genetic Algorithm", "Tabu Search")}}
     (OUT / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print("Wrote", OUT)
     print(json.dumps(summary, indent=2))

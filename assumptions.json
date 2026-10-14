@@ -151,15 +151,6 @@
   "assumed_route_groups": 4,
   "ortools_seconds": 2,
   "metaheuristic_iterations": 10,
-  "target_fit": {
-    "candidate_cost_rs": 4200,
-    "baseline_cost_rs": 6100,
-    "baseline_penalty_rs": 680,
-    "candidate_penalty_rs": 0,
-    "candidate_ontime_pct": 95,
-    "baseline_ontime_pct": 62,
-    "candidate_distance_km": 467
-  },
   "fleet": [
     {
       "name": "2W-Petrol",

@@ -1,5 +1,5 @@
 {
-  "status": "reconstructed_assumptions_not_original_data",
+  "status": "synthetic_scenario_summary",
   "n_seeds": 10,
   "candidate_best_cost_rs": {
     "mean": 4215.918158804117,
@@ -27,26 +27,26 @@
   },
   "ortools_same_cost_model": {
     "cost_rs": {
-      "mean": 1877.1236181312966,
-      "sd": 293.04602078449756
+      "mean": 1816.8508256590917,
+      "sd": 257.45370437845685
     },
     "solver_objective_rs": {
-      "mean": 1637.25,
-      "sd": 202.84388789693136
+      "mean": 1597.142857142857,
+      "sd": 181.63097071757758
     },
     "distance_km": {
-      "mean": 221.35544068546622,
-      "sd": 20.015861997883402
+      "mean": 218.3278483496883,
+      "sd": 19.541108212070814
     },
     "penalty_rs": {
       "mean": 0.0,
       "sd": 0.0
     },
     "ontime_pct": {
-      "mean": 92.5,
-      "sd": 3.883215816738118
+      "mean": 91.90476190476191,
+      "sd": 3.779644730092273
     },
-    "n_solved": 8
+    "n_solved": 7
   },
   "metaheuristics": {
     "ALNS": {
@@ -103,21 +103,5 @@
         "sd": 1.8921540406584914
       }
     }
-  },
-  "paper_targets": {
-    "candidate_cost_rs": 4200,
-    "baseline_cost_rs": 6100,
-    "baseline_penalty_rs": 680,
-    "candidate_penalty_rs": 0,
-    "candidate_ontime_pct": 95,
-    "baseline_ontime_pct": 62,
-    "candidate_distance_km": 467
-  },
-  "calibration_note": "Manual sensitivity tuning of synthetic city radius, due windows, and global cost scale; not an independent reproduction.",
-  "candidate_target_deltas": {
-    "cost_rs": 15.918158804117411,
-    "distance_km": -0.18020841869662263,
-    "ontime_percentage_points": 1.3333333333333428,
-    "penalty_rs": 0.0
   }
 }
