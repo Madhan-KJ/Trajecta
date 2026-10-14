@@ -17,12 +17,15 @@
   "enable_infrastructure": true,
   "enable_pack3d": true,
   "enable_traffic": true,
-  "synthetic_city_radius_km": 22.0,
+  "city_coordinate_jitter_degrees": 0.003,
+  "distance_matrix_formula": "Haversine, Earth radius 6371 km, multiplied by road_distance_factor",
   "cost_rate_scale": 1.16,
   "due_offset_hours": [
     4.0,
     8.0
   ],
+  "dbscan_eps_km": 2.0,
+  "dbscan_min_samples": 2,
   "cities": [
     [
       "Coimbatore",
@@ -130,19 +133,32 @@
   ],
   "penalty_deadline_h": 22.0,
   "t_base": 8.0,
-  "service_base_min": 8.0,
+  "gamma": 5.0,
+  "delta": 1.0,
+  "driver_skill_distribution": {
+    "mean_min": 0.0,
+    "sd_min": 2.0
+  },
   "service_min_per_kg": 0.05,
   "service_min_per_m3": 5.0,
-  "service_noise_sd_min": 2.0,
   "late_rate_rs_per_day": 100.0,
-  "packaging_rs_flagged": 35.0,
-  "toll_rs_route": 30.0,
+  "packaging_rs_per_order": 25.0,
+  "cooling_rs_per_order": 10.0,
+  "toll_rs_by_vehicle_class": {
+    "two_wheeler": 10.0,
+    "four_wheeler": 30.0,
+    "truck": 60.0
+  },
   "wage_rs_per_km": 2.0,
   "maintenance_rs_per_km": 0.55,
-  "fuel_or_energy_rs_per_km": {
+  "terrain_gradient_factor": 1.0,
+  "electric_consumption_kwh_per_km": 0.1,
+  "charging_tariff_rs_per_kwh": 3.5,
+  "baseline_distance_cost_rs_per_km": 12.0,
+  "fuel_rs_per_km": {
     "petrol": 4.5,
     "diesel": 7.0,
-    "electric": 1.1
+    "electric": 0.0
   },
   "traffic": {
     "rush_morning": 1.3,
@@ -150,8 +166,6 @@
     "midday": 1.05,
     "night": 0.9
   },
-  "gamma": 1.0,
-  "delta": 1.0,
   "weather_factor": 1.0,
   "lane_factor": 1.0,
   "skill_distribution": {

@@ -12,6 +12,8 @@ import csv
 import itertools
 import json
 import math
+import ortools
+import platform
 import random
 import statistics
 import time
@@ -32,10 +34,13 @@ CONFIG = {
     "enable_infrastructure": True,
     "enable_pack3d": True,
     "enable_traffic": True,
-    "synthetic_city_radius_km": 22.0,
+    "city_coordinate_jitter_degrees": 0.003,
+    "distance_matrix_formula": "Haversine, Earth radius 6371 km, multiplied by road_distance_factor",
                                                                        
     "cost_rate_scale": 1.16,
     "due_offset_hours": [4.0, 8.0],
+    "dbscan_eps_km": 2.0,
+    "dbscan_min_samples": 2,
     "cities": [
         ["Coimbatore", 11.0168, 76.9558], ["Tiruppur", 11.1085, 77.3411],
         ["Erode", 11.3410, 77.7172], ["Salem", 11.6643, 78.1460],
@@ -51,19 +56,23 @@ CONFIG = {
     "road_distance_factor": 1.18,
     "weight_kg": [4, 55], "volume_m3": [0.015, 0.24],
     "window_hours": [3.0, 8.0], "penalty_deadline_h": 22.0,
-    # Theoretical aliases retained for terminology alignment without changing the model.
     "t_base": 8.0,
-    "service_base_min": 8.0,
+    "gamma": 5.0,
+    "delta": 1.0,
+    "driver_skill_distribution": {"mean_min": 0.0, "sd_min": 2.0},
     "service_min_per_kg": 0.05, "service_min_per_m3": 5.0,
-    "service_noise_sd_min": 2.0, "late_rate_rs_per_day": 100.0,
-    "packaging_rs_flagged": 35.0, "toll_rs_route": 30.0,
+    "late_rate_rs_per_day": 100.0,
+    "packaging_rs_per_order": 25.0,
+    "cooling_rs_per_order": 10.0,
+    "toll_rs_by_vehicle_class": {"two_wheeler": 10.0, "four_wheeler": 30.0, "truck": 60.0},
     "wage_rs_per_km": 2.0, "maintenance_rs_per_km": 0.55,
-    "fuel_or_energy_rs_per_km": {"petrol": 4.5, "diesel": 7.0, "electric": 1.1},
+    "terrain_gradient_factor": 1.0,
+    "electric_consumption_kwh_per_km": 0.1,
+    "charging_tariff_rs_per_kwh": 3.5,
+    "baseline_distance_cost_rs_per_km": 12.0,
+    "fuel_rs_per_km": {"petrol": 4.5, "diesel": 7.0, "electric": 0.0},
     "traffic": {"rush_morning": 1.30, "rush_evening": 1.25,
                 "midday": 1.05, "night": 0.90},
-    # Theoretical aliases for the route-time multipliers used by the synthetic model.
-    "gamma": 1.0,
-    "delta": 1.0,
     "weather_factor": 1.0, "lane_factor": 1.0,
     "skill_distribution": {
         "two_wheeler": {"count": 2, "share": 2 / 7},
@@ -121,19 +130,14 @@ def make_instance(seed: int, order_count: int | None = None):
                                                                           
                                                                           
                                                                             
-    center_lat, center_lon = depot[1], depot[2]
-    centers = [(center_lat, center_lon)]
-    for ci in range(1, len(cities)):
-        theta = 2 * math.pi * (ci - 1) / (len(cities) - 1)
-        radius = CONFIG["synthetic_city_radius_km"] * (0.45 + 0.55 * ((ci * 7) % 17) / 16)
-        centers.append((center_lat + radius * math.cos(theta) / 111.0,
-                        center_lon + radius * math.sin(theta) / (111.0 * math.cos(math.radians(center_lat)))))
+    centers = [(city[1], city[2]) for city in cities]
     orders = []
     for i in range(count):
         ci = rng.randrange(1, len(cities))
         lat0, lon0 = centers[ci]
-        lat = lat0 + rng.uniform(-.003, .003)
-        lon = lon0 + rng.uniform(-.003, .003)
+        jitter = CONFIG["city_coordinate_jitter_degrees"]
+        lat = lat0 + rng.uniform(-jitter, jitter)
+        lon = lon0 + rng.uniform(-jitter, jitter)
         arrival = rng.uniform(6, 10)
         due = min(22, 8.0 + rng.uniform(*CONFIG["due_offset_hours"]))
         weight = rng.uniform(*CONFIG["weight_kg"])
@@ -145,43 +149,44 @@ def make_instance(seed: int, order_count: int | None = None):
         box_h = volume / (box_l * box_w)
         orders.append(Order(i, ci, lat, lon, weight, volume, due, arrival,
                             fragile, cooling, rng.random(), box_l, box_w, box_h))
-    locs = [depot] + [[f"O{i}", o.lat, o.lon] for i, o in enumerate(orders)]
-    d = [[0.0] * len(locs) for _ in locs]
-    for i in range(len(locs)):
-        for j in range(len(locs)):
+    d = [[0.0] * len(cities) for _ in cities]
+    for i in range(len(cities)):
+        for j in range(len(cities)):
             if i != j:
-                d[i][j] = haversine(locs[i], locs[j])
+                d[i][j] = haversine(cities[i], cities[j])
     return orders, d
 
 
 def service_minutes(o: Order, rng: random.Random):
-    flags = 4.0 * o.fragile + 6.0 * o.cooling
-    t_base = CONFIG.get("t_base", CONFIG.get("service_base_min", 8.0))
-    return max(2.0, t_base + CONFIG["service_min_per_kg"] * o.weight
-               + CONFIG["service_min_per_m3"] * o.volume + flags
-               + rng.gauss(0, CONFIG["service_noise_sd_min"]))
+    skill = rng.gauss(CONFIG["driver_skill_distribution"]["mean_min"],
+                      CONFIG["driver_skill_distribution"]["sd_min"])
+    return max(2.0, CONFIG["t_base"] + CONFIG["service_min_per_kg"] * o.weight
+               + CONFIG["service_min_per_m3"] * o.volume
+               + CONFIG["gamma"] * (o.fragile + o.cooling) + CONFIG["delta"] * skill)
 
 
 def travel_hours(km: float, vehicle, departure_h: float):
     if not CONFIG.get("enable_traffic", True):
         return km / vehicle["speed"]
     band = "rush_morning" if 7 <= departure_h < 10 else "rush_evening" if 16 <= departure_h < 19 else "night" if departure_h >= 21 or departure_h < 6 else "midday"
-    gamma = CONFIG.get("gamma", CONFIG.get("weather_factor", 1.0))
-    delta = CONFIG.get("delta", CONFIG.get("lane_factor", 1.0))
-    mult = CONFIG["traffic"][band] * gamma * delta
+    mult = CONFIG["traffic"][band] * CONFIG["weather_factor"] * CONFIG["lane_factor"]
     return km / vehicle["speed"] * mult
 
 
-def seven_cost(distance, vehicle, late_days, flagged):
-    energy = distance * CONFIG["fuel_or_energy_rs_per_km"][vehicle["kind"]]
+def seven_cost(distance, vehicle, late_days, fragile_count, cooling_count):
+    fuel = distance * CONFIG["fuel_rs_per_km"][vehicle["kind"]] * CONFIG["terrain_gradient_factor"]
     wages = distance * CONFIG["wage_rs_per_km"] + vehicle["fixed"]
     penalty = late_days * CONFIG["late_rate_rs_per_day"]
-    cooling_packaging = flagged * CONFIG["packaging_rs_flagged"]
+    cooling_packaging = (fragile_count * CONFIG["packaging_rs_per_order"]
+                         + cooling_count * CONFIG["cooling_rs_per_order"])
     maintenance = distance * CONFIG["maintenance_rs_per_km"]
-    tolls = CONFIG["toll_rs_route"] if distance > 40 else 0.0
-    ev_charging = distance * .35 if vehicle["kind"] == "electric" else 0.0
+    vehicle_class = ("two_wheeler" if vehicle["name"].startswith("2W")
+                     else "truck" if vehicle["name"].startswith("Truck") else "four_wheeler")
+    tolls = CONFIG["toll_rs_by_vehicle_class"][vehicle_class] if distance > 40 else 0.0
+    ev_charging = (distance * CONFIG["electric_consumption_kwh_per_km"]
+                   * CONFIG["charging_tariff_rs_per_kwh"] if vehicle["kind"] == "electric" else 0.0)
     scale = CONFIG["cost_rate_scale"]
-    return scale * (energy + wages + penalty + cooling_packaging + maintenance + tolls + ev_charging), scale * penalty
+    return scale * (fuel + wages + penalty + cooling_packaging + maintenance + tolls + ev_charging), scale * penalty
 
 
 def pack3d(route, vehicle, orders):
@@ -248,42 +253,85 @@ def score_route(route, vehicle, orders, d, seed, objective="full"):
     clock = 8.0
     distance = 0.0
     late_days = 0.0
-    flagged = 0
+    fragile_count = 0
+    cooling_count = 0
     rng = random.Random(seed * 1009 + sum((i + 1) * (j + 3) for j, i in enumerate(route)))
     prev = 0
     ontime = 0
     for idx in route:
         o = orders[idx]
-        km = d[prev][idx + 1]
+        km = d[prev][o.city]
         distance += km
         clock += travel_hours(km, vehicle, clock)
         clock += service_minutes(o, rng) / 60.0
         ontime += clock <= o.due_h
                                                                          
                                                                             
-        late_days += max(0, math.ceil((clock - CONFIG["penalty_deadline_h"]) / 24.0))
-        flagged += int(o.fragile or o.cooling)
-        prev = idx + 1
+        late_days += max(0.0, (clock - o.due_h) / 24.0)
+        fragile_count += int(o.fragile)
+        cooling_count += int(o.cooling)
+        prev = o.city
     distance += d[prev][0]
-    cost, penalty = seven_cost(distance, vehicle, late_days, flagged)
+    cost, penalty = seven_cost(distance, vehicle, late_days, fragile_count, cooling_count)
     if objective == "simple":
         cost = distance * 12.0 + penalty
     return cost, distance, penalty, 100.0 * ontime / len(route)
 
 
 def make_splits(orders, d):
+    def density_split():
+        labels = [None] * len(orders)
+        cluster_id = 0
+
+        def neighbors(index):
+            point = ["", orders[index].lat, orders[index].lon]
+            return [other for other in range(len(orders))
+                    if haversine(point, ["", orders[other].lat, orders[other].lon])
+                    <= CONFIG["dbscan_eps_km"]]
+
+        for index in range(len(orders)):
+            if labels[index] is not None:
+                continue
+            nearby = neighbors(index)
+            if len(nearby) < CONFIG["dbscan_min_samples"]:
+                labels[index] = -1
+                continue
+            labels[index] = cluster_id
+            pending = list(nearby)
+            while pending:
+                current = pending.pop()
+                if labels[current] == -1:
+                    labels[current] = cluster_id
+                if labels[current] is not None:
+                    continue
+                labels[current] = cluster_id
+                current_neighbors = neighbors(current)
+                if len(current_neighbors) >= CONFIG["dbscan_min_samples"]:
+                    pending.extend(current_neighbors)
+            cluster_id += 1
+
+        clusters = {}
+        for index, label in enumerate(labels):
+            cluster_key = ("noise", index) if label == -1 else ("cluster", label)
+            clusters.setdefault(cluster_key, []).append(orders[index])
+        groups = [[] for _ in range(CONFIG["assumed_route_groups"])]
+        for cluster in sorted(clusters.values(), key=len, reverse=True):
+            target = min(range(len(groups)), key=lambda group: len(groups[group]))
+            groups[target].extend(cluster)
+        return groups
+
     keys: list[Callable] = [
         lambda o: o.due_h, lambda o: o.arrival_h, lambda o: o.lat,
-        lambda o: d[0][o.oid + 1],
+        lambda o: d[0][o.city],
         lambda o: o.lon, lambda o: o.lat + o.lon,
         lambda o: o.penalty_risk * max(0.0, 21 - o.due_h),
-        lambda o: (o.city, o.lat, o.lon),
     ]
     out = []
     groups = CONFIG["assumed_route_groups"]
     for key in keys:
         ordered = sorted(orders, key=key)
         out.append([list(ordered[i::groups]) for i in range(groups)])
+    out.append(density_split())
     return out
 
 
@@ -295,40 +343,43 @@ def make_routes(group, orders, d, kind, seed):
         rng = random.Random(seed)
         remaining, out, here = set(ids), [], 0
         while remaining:
-            nxt = min(remaining, key=lambda i: d[here][i + 1] * rng.uniform(.85, 1.15))
-            out.append(nxt); remaining.remove(nxt); here = nxt + 1
+            nxt = min(remaining, key=lambda i: d[here][orders[i].city] * rng.uniform(.85, 1.15))
+            out.append(nxt); remaining.remove(nxt); here = orders[nxt].city
         return out
     if kind == "MU":
-        return sorted(ids, key=lambda i: orders[i].due_h - d[0][i + 1] / 35)
+        return sorted(ids, key=lambda i: orders[i].due_h - d[0][orders[i].city] / 35)
     if kind == "FI":
         remaining = set(ids)
-        first = max(remaining, key=lambda i: d[0][i + 1]); out = [first]; remaining.remove(first)
+        first = max(remaining, key=lambda i: d[0][orders[i].city]); out = [first]; remaining.remove(first)
         while remaining:
-            nxt = max(remaining, key=lambda i: min(d[i + 1][j + 1] for j in out))
-            pos = min(range(len(out) + 1), key=lambda p: insertion_delta(out, nxt, p, d))
+            nxt = max(remaining, key=lambda i: min(d[orders[i].city][orders[j].city] for j in out))
+            pos = min(range(len(out) + 1), key=lambda p: insertion_delta(out, nxt, p, d, orders))
             out.insert(pos, nxt); remaining.remove(nxt)
         return out
     if kind == "G TW":
-        return sorted(ids, key=lambda i: (max(0, 8 + d[0][i + 1] / 35 - orders[i].due_h), d[0][i + 1]))
+        return sorted(ids, key=lambda i: (max(0, 8 + d[0][orders[i].city] / 35 - orders[i].due_h), d[0][orders[i].city]))
     if kind == "CFRS":
         return sorted(ids, key=lambda i: (orders[i].city, orders[i].lat, orders[i].lon))
     if kind == "BiDir":
-        ascending = sorted(ids, key=lambda i: d[0][i + 1])
+        ascending = sorted(ids, key=lambda i: d[0][orders[i].city])
         return ascending[::2] + ascending[1::2][::-1]
                               
     remaining, out, here = set(ids), [], 0
     while remaining:
-        nxt = min(remaining, key=lambda i: d[here][i + 1])
-        out.append(nxt); remaining.remove(nxt); here = nxt + 1
+        nxt = min(remaining, key=lambda i: d[here][orders[i].city])
+        out.append(nxt); remaining.remove(nxt); here = orders[nxt].city
     return out
 
 
-def insertion_delta(route, node, pos, d):
-    left = 0 if pos == 0 else route[pos - 1] + 1
-    right = 0 if pos == len(route) else route[pos] + 1
-    return d[left][node + 1] + d[node + 1][right] - d[left][right]
+def insertion_delta(route, node, pos, d, orders):
+    left = 0 if pos == 0 else orders[route[pos - 1]].city
+    right = 0 if pos == len(route) else orders[route[pos]].city
+    city = orders[node].city
+    return d[left][city] + d[city][right] - d[left][right]
 
 
+SPLIT_NAMES = ["EDD", "Arrival", "Latitude", "Travel Time", "Longitude",
+               "Lat-Lon", "Penalty-Risk", "DensityGeo"]
 HEURISTICS = ["NN", "BiDir", "MU", "FI", "RNN", "G TW", "CFRS"]
 
 
@@ -358,9 +409,22 @@ def candidate_runs(orders, d, seed):
             flatdist = sum(x[1][1] for x in details)
             penalty = sum(x[1][2] for x in details)
             ontime = sum(x[1][3] * len(r) for x, r in zip(details, routes)) / len(orders)
-            rows.append({"split": si, "heuristic": heuristic, "cost_rs": total,
+            route_details = []
+            for route_index, (route, (vehicle_index, metrics)) in enumerate(zip(routes, details)):
+                city_ids = [0] + [orders[order_id].city for order_id in route] + [0]
+                route_details.append({
+                    "route_index": route_index,
+                    "vehicle": FLEET[vehicle_index]["name"],
+                    "order_ids": ";".join(str(order_id) for order_id in route),
+                    "city_ids": ";".join(str(city_id) for city_id in city_ids),
+                    "cost_rs": metrics[0],
+                    "distance_km": metrics[1],
+                    "penalty_rs": metrics[2],
+                    "ontime_pct": metrics[3],
+                })
+            rows.append({"split_index": si, "split": SPLIT_NAMES[si], "heuristic": heuristic, "cost_rs": total,
                          "distance_km": flatdist, "penalty_rs": penalty,
-                         "ontime_pct": ontime,
+                         "ontime_pct": ontime, "route_details": route_details,
                          "vehicles": ";".join(FLEET[v]["name"] for v in assigned)})
     return rows
 
@@ -390,14 +454,18 @@ def write_csv(name, rows):
 
 
 def summarize_stats(rows, key):
-    vals = [float(r[key]) for r in rows if r.get(key) is not None]
+    raw = [float(r[key]) for r in rows if r.get(key) is not None]
+    vals = [value for value in raw if math.isfinite(value)]
     if not vals:
-        return {"mean": None, "sd": None, "min": None, "max": None}
+        return {"mean": None, "sd": None, "min": None, "max": None,
+                "n_valid": 0, "n_nonfinite": len(raw)}
     return {
         "mean": statistics.mean(vals),
         "sd": statistics.stdev(vals) if len(vals) > 1 else 0.0,
         "min": min(vals),
         "max": max(vals),
+        "n_valid": len(vals),
+        "n_nonfinite": len(raw) - len(vals),
     }
 
 
@@ -406,28 +474,33 @@ def run_ablation_experiments():
         ("baseline", {}),
         ("no_infrastructure", {"enable_infrastructure": False}),
         ("no_traffic", {"enable_traffic": False, "traffic": {"rush_morning": 1.0, "rush_evening": 1.0, "midday": 1.0, "night": 1.0}, "weather_factor": 1.0, "lane_factor": 1.0}),
-        ("no_penalties", {"late_rate_rs_per_day": 0.0, "packaging_rs_flagged": 0.0, "penalty_deadline_h": 999.0}),
+        ("no_penalties", {"late_rate_rs_per_day": 0.0, "packaging_rs_per_order": 0.0,
+                   "cooling_rs_per_order": 0.0, "penalty_deadline_h": 999.0}),
     ]
     rows = []
     original = copy.deepcopy(CONFIG)
-    for variant_name, overrides in variants:
-        for k, v in overrides.items():
-            CONFIG[k] = copy.deepcopy(v)
-        for seed in CONFIG["seeds"][:3]:
-            orders, d = make_instance(seed)
-            candidate = candidate_runs(orders, d, seed)
-            best = min(candidate, key=lambda r: r["cost_rs"])
-            rows.append({
-                "variant": variant_name,
-                "seed": seed,
-                "best_cost_rs": best["cost_rs"],
-                "best_distance_km": best["distance_km"],
-                "best_penalty_rs": best["penalty_rs"],
-                "best_ontime_pct": best["ontime_pct"],
-                "best_algorithm": best["heuristic"],
-                "runtime_s": 0.0,
-            })
-    CONFIG.clear(); CONFIG.update(original)
+    try:
+        for variant_name, overrides in variants:
+            CONFIG.clear(); CONFIG.update(copy.deepcopy(original))
+            CONFIG.update(copy.deepcopy(overrides))
+            for seed in CONFIG["seeds"][:3]:
+                t0 = time.perf_counter()
+                orders, d = make_instance(seed)
+                candidate = candidate_runs(orders, d, seed)
+                runtime = time.perf_counter() - t0
+                best = min(candidate, key=lambda r: r["cost_rs"])
+                rows.append({
+                    "variant": variant_name,
+                    "seed": seed,
+                    "best_cost_rs": best["cost_rs"],
+                    "best_distance_km": best["distance_km"],
+                    "best_penalty_rs": best["penalty_rs"],
+                    "best_ontime_pct": best["ontime_pct"],
+                    "best_algorithm": best["heuristic"],
+                    "runtime_s": runtime,
+                })
+    finally:
+        CONFIG.clear(); CONFIG.update(original)
     return rows
 
 
@@ -540,23 +613,46 @@ def metaheuristic_runs(orders, d, seed):
     return rows
 
 
+def score_simplified_route(route, vehicle, orders, d, seed):
+    if not route:
+        return 0.0, 0.0, 0.0, 100.0
+    clock = 8.0
+    distance = 0.0
+    late_days = 0.0
+    ontime = 0
+    rng = random.Random(seed * 1009 + sum((i + 1) * (j + 3) for j, i in enumerate(route)))
+    previous_city = 0
+    for index in route:
+        order = orders[index]
+        km = d[previous_city][order.city]
+        distance += km
+        clock += travel_hours(km, vehicle, clock)
+        clock += service_minutes(order, rng) / 60.0
+        ontime += clock <= order.due_h
+        late_days += max(0.0, (clock - order.due_h) / 24.0)
+        previous_city = order.city
+    distance += d[previous_city][0]
+    penalty = late_days * CONFIG["late_rate_rs_per_day"]
+    cost = distance * CONFIG["baseline_distance_cost_rs_per_km"] + penalty
+    return cost, distance, penalty, 100.0 * ontime / len(route)
+
+
 def ortools_baseline(orders, d, seed, seconds=None):
     n, nv = len(orders), len(FLEET)
     manager = pywrapcp.RoutingIndexManager(n + 1, nv, 0)
     routing = pywrapcp.RoutingModel(manager)
+
+    def city_for_node(node):
+        return 0 if node == 0 else orders[node - 1].city
+
     def transit(from_idx, to_idx, vi):
         a, b = manager.IndexToNode(from_idx), manager.IndexToNode(to_idx)
-        km = d[a][b]
-        if b == 0:
-            return 0
-        o = orders[b - 1]
-        v = FLEET[vi]
-        operating = CONFIG["fuel_or_energy_rs_per_km"][v["kind"]] + CONFIG["wage_rs_per_km"] + CONFIG["maintenance_rs_per_km"] + (0.35 if v["kind"] == "electric" else 0)
-        return int(round(CONFIG["cost_rate_scale"] * (km * operating + (CONFIG["packaging_rs_flagged"] if o.fragile or o.cooling else 0))))
+        km = d[city_for_node(a)][city_for_node(b)]
+        return int(round(km * CONFIG["baseline_distance_cost_rs_per_km"] * 100))
+
     for vi in range(nv):
         cb = routing.RegisterTransitCallback(lambda a, b, vi=vi: transit(a, b, vi))
         routing.SetArcCostEvaluatorOfVehicle(cb, vi)
-        routing.SetFixedCostOfVehicle(int(CONFIG["cost_rate_scale"] * (FLEET[vi]["fixed"] + CONFIG["toll_rs_route"])), vi)
     def demand_cb(idx):
         node = manager.IndexToNode(idx)
         return 0 if node == 0 else int(round(orders[node - 1].weight * 100))
@@ -569,24 +665,33 @@ def ortools_baseline(orders, d, seed, seconds=None):
     vol = routing.RegisterUnaryTransitCallback(vol_cb)
     routing.AddDimensionWithVehicleCapacity(vol, 0,
         [int(v["volume"] * 1000) for v in FLEET], True, "Volume")
-    def time_cb(from_idx, to_idx):
-        a, b = manager.IndexToNode(from_idx), manager.IndexToNode(to_idx)
-        km = d[a][b]
-        service = 0 if b == 0 else CONFIG["service_base_min"] + CONFIG["service_min_per_kg"] * orders[b-1].weight + CONFIG["service_min_per_m3"] * orders[b-1].volume
-        return int((km / 35 * 1.15 * 60) + service)
-    tcb = routing.RegisterTransitCallback(time_cb)
-    routing.AddDimension(tcb, 12 * 60, 48 * 60, False, "Time")
+    time_callbacks = []
+    for vehicle in FLEET:
+        def time_cb(from_idx, to_idx, vehicle=vehicle):
+            a, b = manager.IndexToNode(from_idx), manager.IndexToNode(to_idx)
+            km = d[city_for_node(a)][city_for_node(b)]
+            service = 0.0
+            if b != 0:
+                order = orders[b - 1]
+                service = (CONFIG["t_base"] + CONFIG["service_min_per_kg"] * order.weight
+                           + CONFIG["service_min_per_m3"] * order.volume
+                           + CONFIG["gamma"] * (order.fragile + order.cooling))
+            return int(round(km / vehicle["speed"] * 1.15 * 60 + service))
+        time_callbacks.append(routing.RegisterTransitCallback(time_cb))
+    routing.AddDimensionWithVehicleTransitAndCapacity(
+        time_callbacks, 12 * 60, [48 * 60] * nv, False, "Time")
     time_dim = routing.GetDimensionOrDie("Time")
     for vi in range(nv):
         time_dim.CumulVar(routing.Start(vi)).SetRange(8 * 60, 8 * 60)
     for oi, o in enumerate(orders):
         idx = manager.NodeToIndex(oi + 1)
-        lo = max(8 * 60, int(o.arrival_h * 60)); hi = int(o.due_h * 60)
+        lo = max(8 * 60, int(o.arrival_h * 60)); hi = 48 * 60
         time_dim.CumulVar(idx).SetRange(lo, hi)
-        deadline = int(CONFIG["penalty_deadline_h"] * 60)
-        time_dim.SetCumulVarSoftUpperBound(idx, deadline,
-            max(1, int(CONFIG["cost_rate_scale"] * CONFIG["late_rate_rs_per_day"] / (24 * 60))))
-        eligible = {vi for vi, v in enumerate(FLEET) if o.weight <= v["weight"] and o.volume <= v["volume"]}
+        time_dim.SetCumulVarSoftUpperBound(
+            idx, int(o.due_h * 60),
+            max(1, int(CONFIG["late_rate_rs_per_day"] * 100 / (24 * 60))))
+        eligible = {vi for vi, v in enumerate(FLEET)
+                if o.weight <= v["weight"] and o.volume <= v["volume"]}
                                                                                
                                                                               
         for vi in range(nv):
@@ -600,8 +705,11 @@ def ortools_baseline(orders, d, seed, seconds=None):
     solution = routing.SolveWithParameters(params)
     if solution is None:
         return {"status": "no_solution", "cost_rs": None, "distance_km": None,
-                "penalty_rs": None, "ontime_pct": None}
-    distance = 0.0; penalty = 0.0; evaluated_cost = 0.0; ontime = 0; served = 0
+                "penalty_rs": None, "ontime_pct": None, "solver_objective_rs": None,
+                "full_model_feasible": False, "full_model_cost_rs": None,
+                "objective_model": "distance_km*12 + due_lateness_penalty"}
+    distance = 0.0; penalty = 0.0; cost = 0.0; ontime = 0; served = 0
+    full_model_cost = 0.0; full_model_feasible = True
     for vi, vehicle in enumerate(FLEET):
         idx = routing.Start(vi); route = []
         while not routing.IsEnd(idx):
@@ -611,16 +719,23 @@ def ortools_baseline(orders, d, seed, seconds=None):
             idx = solution.Value(routing.NextVar(idx))
         if not route:
             continue
-        result = score_route(route, vehicle, orders, d, seed)
-        evaluated_cost += result[0]
-        distance += result[1]; penalty += result[2]
-        ontime += result[3] * len(route) / 100; served += len(route)
-    status = "ok" if math.isfinite(evaluated_cost) else "infeasible_post_validation"
-    return {"status": status, "cost_rs": evaluated_cost if math.isfinite(evaluated_cost) else None,
-            "solver_objective_rs": float(solution.ObjectiveValue()),
-            "distance_km": distance if math.isfinite(evaluated_cost) else None,
-            "penalty_rs": penalty if math.isfinite(evaluated_cost) else None,
-            "ontime_pct": 100 * ontime / max(1, served) if math.isfinite(evaluated_cost) else None}
+        simple_result = score_simplified_route(route, vehicle, orders, d, seed)
+        full_result = score_route(route, vehicle, orders, d, seed)
+        cost += simple_result[0]
+        distance += simple_result[1]; penalty += simple_result[2]
+        ontime += simple_result[3] * len(route) / 100; served += len(route)
+        if math.isfinite(full_result[0]):
+            full_model_cost += full_result[0]
+        else:
+            full_model_feasible = False
+    return {"status": "ok", "cost_rs": cost,
+            "solver_objective_rs": float(solution.ObjectiveValue()) / 100.0,
+            "distance_km": distance,
+            "penalty_rs": penalty,
+            "ontime_pct": 100 * ontime / max(1, served),
+            "full_model_feasible": full_model_feasible,
+            "full_model_cost_rs": full_model_cost if full_model_feasible else None,
+            "objective_model": "distance_km*12 + due_lateness_penalty"}
 
 
 def main():
@@ -628,14 +743,26 @@ def main():
     DATA = HERE / "datasets"
     DATA.mkdir(parents=True, exist_ok=True)
     (HERE / "assumptions.json").write_text(json.dumps(CONFIG | {"fleet": FLEET}, indent=2), encoding="utf-8")
-    candidate_rows, base_rows, instance_rows, meta_rows = [], [], [], []
+    candidate_rows, route_detail_rows, base_rows, instance_rows, meta_rows = [], [], [], [], []
+
     for seed in CONFIG["seeds"]:
         orders, d = make_instance(seed)
         for o in orders:
             instance_rows.append(asdict(o) | {"seed": seed})
         cr = candidate_runs(orders, d, seed)
         best = min(cr, key=lambda r: r["cost_rs"])
-        candidate_rows.extend({"seed": seed, **r} for r in cr)
+        for candidate in cr:
+            candidate_rows.append({"seed": seed, **{key: value for key, value in candidate.items()
+                                                     if key != "route_details"}})
+            candidate_id = f"{seed}-{candidate['split_index']}-{candidate['heuristic']}"
+            route_detail_rows.extend({
+                "seed": seed,
+                "candidate_id": candidate_id,
+                "split_index": candidate["split_index"],
+                "split": candidate["split"],
+                "heuristic": candidate["heuristic"],
+                **detail,
+            } for detail in candidate["route_details"])
         meta_rows.extend({"seed": seed, **r} for r in metaheuristic_runs(orders, d, seed))
         base = ortools_baseline(orders, d, seed)
         base_rows.append({"seed": seed, **base})
@@ -650,6 +777,12 @@ def main():
     with (DATA / "synthetic_30_orders.csv").open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(instance_rows[0]))
         w.writeheader(); w.writerows(instance_rows)
+    city_names = [city[0] for city in CONFIG["cities"]]
+    with (DATA / "city_distance_matrix.csv").open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["city_id", "city_name", *city_names])
+        for city_id, city in enumerate(CONFIG["cities"]):
+            w.writerow([city_id, city[0], *d[city_id]])
                                                                         
     infra_rows = []
     city_count = CONFIG["cities_including_depot"]
@@ -663,30 +796,36 @@ def main():
         with (DATA / "synthetic_infrastructure_constraints.csv").open("w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=infra_fields); w.writeheader(); w.writerows(infra_rows)
     write_csv("candidate_routes.csv", candidate_rows)
+    write_csv("candidate_route_details.csv", route_detail_rows)
     write_csv("ortools_baseline.csv", base_rows)
     write_csv("metaheuristic_results.csv", meta_rows)
     minima = [min(candidate_rows[i*56:(i+1)*56], key=lambda r: r["cost_rs"]) for i in range(len(CONFIG["seeds"]))]
     def stats(key):
-        vals = [float(r[key]) for r in minima]
-        return {"mean": statistics.mean(vals), "sd": statistics.stdev(vals) if len(vals)>1 else 0,
-                "min": min(vals), "max": max(vals)}
+        return summarize_stats(minima, key)
     baseline_solved = [r for r in base_rows if r["cost_rs"] is not None]
     def baseline_stats(key):
-        vals = [float(r[key]) for r in baseline_solved if r[key] is not None]
-        return {"mean": statistics.mean(vals), "sd": statistics.stdev(vals) if len(vals)>1 else 0}
+        return summarize_stats(baseline_solved, key)
+
+    def algorithm_stats(name, key):
+        rows = [r for r in meta_rows if r["algorithm"] == name]
+        return summarize_stats(rows, key)
     summary = {"status": "synthetic_scenario_summary",
+               "runtime_environment": {"python_version": platform.python_version(),
+                                       "platform": platform.platform(),
+                                       "ortools_version": ortools.__version__},
                "n_seeds": len(CONFIG["seeds"]), "candidate_best_cost_rs": stats("cost_rs"),
                "candidate_distance_km": stats("distance_km"),
                "candidate_penalty_rs": stats("penalty_rs"), "candidate_ontime_pct": stats("ontime_pct"),
-               "ortools_same_cost_model": {"cost_rs": baseline_stats("cost_rs"),
+               "ortools_simplified_distance_penalty": {"cost_rs": baseline_stats("cost_rs"),
                    "solver_objective_rs": baseline_stats("solver_objective_rs"),
                    "distance_km": baseline_stats("distance_km"),
                    "penalty_rs": baseline_stats("penalty_rs"),
                    "ontime_pct": baseline_stats("ontime_pct"),
-                   "n_solved": len(baseline_solved)},
-               "metaheuristics": {name: {key: {"mean": statistics.mean(float(r[key]) for r in meta_rows if r["algorithm"] == name),
-                                                       "sd": statistics.stdev(float(r[key]) for r in meta_rows if r["algorithm"] == name)}
-                                                for key in ("cost_rs", "distance_km", "penalty_rs", "ontime_pct")}
+                   "n_solved": len(baseline_solved),
+                   "n_full_model_feasible": sum(bool(r.get("full_model_feasible")) for r in baseline_solved),
+                   "objective_model": "distance_km*12 + due_lateness_penalty"},
+             "metaheuristics": {name: {key: algorithm_stats(name, key)
+                                  for key in ("cost_rs", "distance_km", "penalty_rs", "ontime_pct")}
                                    for name in ("ALNS", "Genetic Algorithm", "Tabu Search")},
                "ablation": {
                    variant: {key: summarize_stats([r for r in ablation_rows if r["variant"] == variant], key)
@@ -696,9 +835,12 @@ def main():
                "scalability": {
                    str(size): {
                        "n_orders": size,
-                       "avg_runtime_s": statistics.mean(float(r["runtime_s"]) for r in scalability_rows if r["n_orders"] == size),
-                       "avg_cost_rs": statistics.mean(float(r["cost_rs"]) for r in scalability_rows if r["n_orders"] == size and r["cost_rs"] is not None),
-                       "avg_distance_km": statistics.mean(float(r["distance_km"]) for r in scalability_rows if r["n_orders"] == size and r["distance_km"] is not None),
+                       "n_runs": sum(r["n_orders"] == size for r in scalability_rows),
+                       "n_valid_costs": sum(r["n_orders"] == size and r["cost_rs"] is not None
+                                            and math.isfinite(float(r["cost_rs"])) for r in scalability_rows),
+                       "avg_runtime_s": summarize_stats([r for r in scalability_rows if r["n_orders"] == size], "runtime_s")["mean"],
+                       "avg_cost_rs": summarize_stats([r for r in scalability_rows if r["n_orders"] == size], "cost_rs")["mean"],
+                       "avg_distance_km": summarize_stats([r for r in scalability_rows if r["n_orders"] == size], "distance_km")["mean"],
                        "algorithms": sorted({r["algorithm"] for r in scalability_rows if r["n_orders"] == size}),
                    } for size in sorted({r["n_orders"] for r in scalability_rows})
                }}
