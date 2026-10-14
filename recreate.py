@@ -353,8 +353,11 @@ def assign_vehicles(routes, orders, d, seed, objective="full"):
 
 def candidate_runs(orders, d, seed):
     rows = []
+    deadline = time.perf_counter() + CONFIG["ortools_seconds"]
     for si, split in enumerate(make_splits(orders, d)):
         for heuristic in HEURISTICS:
+            if time.perf_counter() >= deadline:
+                return rows
             routes = [make_routes(g, orders, d, heuristic, seed + si) for g in split]
             total, assigned, details = assign_vehicles(routes, orders, d, seed)
             flatdist = sum(x[1][1] for x in details)
@@ -940,7 +943,9 @@ def main():
     write_csv("candidate_routes.csv", candidate_rows)
     write_csv("ortools_baseline.csv", base_rows)
     write_csv("metaheuristic_results.csv", meta_rows)
-    minima = [min(candidate_rows[i*56:(i+1)*56], key=lambda r: r["cost_rs"]) for i in range(len(CONFIG["seeds"]))]
+    minima = [min((row for row in candidate_rows if row["seed"] == seed),
+                  key=lambda row: row["cost_rs"])
+              for seed in CONFIG["seeds"]]
     def stats(key):
         vals = [float(r[key]) for r in minima]
         return {"mean": statistics.mean(vals), "sd": statistics.stdev(vals) if len(vals)>1 else 0,
