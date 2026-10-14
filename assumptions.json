@@ -17,6 +17,11 @@
   "enable_infrastructure": true,
   "enable_pack3d": true,
   "enable_traffic": true,
+  "enable_stochastic_service_time": true,
+  "enable_penalty_risk_split": true,
+  "enable_dbscan": false,
+  "dbscan_eps_km": 2.0,
+  "dbscan_min_samples": 2,
   "synthetic_city_radius_km": 22.0,
   "cost_rate_scale": 1.16,
   "due_offset_hours": [

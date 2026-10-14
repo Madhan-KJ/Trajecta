@@ -33,6 +33,11 @@ CONFIG = {
     "enable_infrastructure": True,
     "enable_pack3d": True,
     "enable_traffic": True,
+    "enable_stochastic_service_time": True,
+    "enable_penalty_risk_split": True,
+    "enable_dbscan": False,
+    "dbscan_eps_km": 2.0,
+    "dbscan_min_samples": 2,
     "synthetic_city_radius_km": 22.0,
                                                                        
     "cost_rate_scale": 1.16,
@@ -159,9 +164,10 @@ def service_minutes(o: Order, seed: int):
     flags = 4.0 * o.fragile + 6.0 * o.cooling
     t_base = CONFIG.get("t_base", CONFIG.get("service_base_min", 8.0))
     rng = random.Random(seed * 1009 + (o.oid + 1) * 9176)
+    noise = rng.gauss(0, CONFIG["service_noise_sd_min"]) if CONFIG.get("enable_stochastic_service_time", True) else 0.0
     minutes = max(2.0, t_base + CONFIG["service_min_per_kg"] * o.weight
                   + CONFIG["service_min_per_m3"] * o.volume + flags
-                  + rng.gauss(0, CONFIG["service_noise_sd_min"]))
+                  + noise)
     return round(minutes * 60) / 60
 
 
@@ -273,19 +279,78 @@ def score_route(route, vehicle, orders, d, seed, objective="full"):
     return cost, distance, penalty, 100.0 * ontime / len(route)
 
 
+def dbscan_split(orders, d, group_count):
+    eps = CONFIG["dbscan_eps_km"]
+    min_samples = CONFIG["dbscan_min_samples"]
+    labels = [-2] * len(orders)
+    cluster_id = 0
+
+    def neighbors(index):
+        return [other for other in range(len(orders))
+                if d[orders[index].oid + 1][orders[other].oid + 1] <= eps]
+
+    for index in range(len(orders)):
+        if labels[index] != -2:
+            continue
+        nearby = neighbors(index)
+        if len(nearby) < min_samples:
+            labels[index] = -1
+            continue
+        labels[index] = cluster_id
+        pending = list(nearby)
+        pending_set = set(pending)
+        while pending:
+            current = pending.pop()
+            if labels[current] == -1:
+                labels[current] = cluster_id
+            if labels[current] != -2:
+                continue
+            labels[current] = cluster_id
+            current_neighbors = neighbors(current)
+            if len(current_neighbors) >= min_samples:
+                for other in current_neighbors:
+                    if other not in pending_set:
+                        pending.append(other)
+                        pending_set.add(other)
+        cluster_id += 1
+
+    clusters = {}
+    noise = []
+    for index, label in enumerate(labels):
+        if label == -1:
+            noise.append(orders[index])
+        else:
+            clusters.setdefault(label, []).append(orders[index])
+
+    groups = [[] for _ in range(group_count)]
+    for cluster in sorted(clusters.values(), key=len, reverse=True):
+        target = min(range(group_count), key=lambda i: len(groups[i]))
+        groups[target].extend(cluster)
+    for order in noise:
+        target = min(range(group_count), key=lambda i: len(groups[i]))
+        groups[target].append(order)
+    return groups
+
+
 def make_splits(orders, d):
-    keys: list[Callable] = [
-        lambda o: o.due_h, lambda o: o.arrival_h, lambda o: o.lat,
-        lambda o: d[0][o.oid + 1],
-        lambda o: o.lon, lambda o: o.lat + o.lon,
-        lambda o: o.penalty_risk * max(0.0, 21 - o.due_h),
-        lambda o: (o.city, o.lat, o.lon),
+    strategies: list[tuple[str, Callable]] = [
+        ("due_time", lambda o: o.due_h),
+        ("arrival_time", lambda o: o.arrival_h),
+        ("latitude", lambda o: o.lat),
+        ("depot_distance", lambda o: d[0][o.oid + 1]),
+        ("longitude", lambda o: o.lon),
+        ("latitude_longitude", lambda o: o.lat + o.lon),
     ]
+    if CONFIG.get("enable_penalty_risk_split", True):
+        strategies.append(("penalty_risk", lambda o: o.penalty_risk * max(0.0, 21 - o.due_h)))
+    strategies.append(("city_location", lambda o: (o.city, o.lat, o.lon)))
     out = []
     groups = CONFIG["assumed_route_groups"]
-    for key in keys:
+    for name, key in strategies:
         ordered = sorted(orders, key=key)
-        out.append([list(ordered[i::groups]) for i in range(groups)])
+        out.append((name, [list(ordered[i::groups]) for i in range(groups)]))
+    if CONFIG.get("enable_dbscan", False):
+        out.append(("dbscan", dbscan_split(orders, d, groups)))
     return out
 
 
@@ -354,7 +419,7 @@ def assign_vehicles(routes, orders, d, seed, objective="full"):
 def candidate_runs(orders, d, seed):
     rows = []
     deadline = time.perf_counter() + CONFIG["ortools_seconds"]
-    for si, split in enumerate(make_splits(orders, d)):
+    for si, (split_name, split) in enumerate(make_splits(orders, d)):
         for heuristic in HEURISTICS:
             if time.perf_counter() >= deadline:
                 return rows
@@ -363,7 +428,7 @@ def candidate_runs(orders, d, seed):
             flatdist = sum(x[1][1] for x in details)
             penalty = sum(x[1][2] for x in details)
             ontime = sum(x[1][3] * len(r) for x, r in zip(details, routes)) / len(orders)
-            rows.append({"split": si, "heuristic": heuristic, "cost_rs": total,
+            rows.append({"split": si, "split_strategy": split_name, "heuristic": heuristic, "cost_rs": total,
                          "distance_km": flatdist, "penalty_rs": penalty,
                          "ontime_pct": ontime,
                          "vehicles": ";".join(FLEET[v]["name"] for v in assigned)})
@@ -409,31 +474,45 @@ def summarize_stats(rows, key):
 
 def run_ablation_experiments():
     variants = [
-        ("baseline", {}),
-        ("no_infrastructure", {"enable_infrastructure": False}),
-        ("no_traffic", {"enable_traffic": False, "traffic": {"rush_morning": 1.0, "rush_evening": 1.0, "midday": 1.0, "night": 1.0}, "weather_factor": 1.0, "lane_factor": 1.0}),
-        ("no_penalties", {"late_rate_rs_per_day": 0.0, "packaging_rs_flagged": 0.0, "penalty_deadline_h": 999.0}),
+        ("baseline", None, {}),
+        ("no_3d_packing", "3d_packing", {"enable_pack3d": False}),
+        ("no_infrastructure", "infrastructure", {"enable_infrastructure": False}),
+        ("no_dbscan", "dbscan", {"enable_dbscan": False}),
+        ("no_penalty_risk_split", "penalty_risk_split", {"enable_penalty_risk_split": False}),
+        ("no_traffic", "traffic", {"enable_traffic": False}),
+        ("no_stochastic_service_time", "stochastic_service_time", {"enable_stochastic_service_time": False}),
     ]
     rows = []
     original = copy.deepcopy(CONFIG)
-    for variant_name, overrides in variants:
-        for k, v in overrides.items():
-            CONFIG[k] = copy.deepcopy(v)
-        for seed in CONFIG["seeds"][:3]:
-            orders, d = make_instance(seed)
-            candidate = candidate_runs(orders, d, seed)
-            best = min(candidate, key=lambda r: r["cost_rs"])
-            rows.append({
-                "variant": variant_name,
-                "seed": seed,
-                "best_cost_rs": best["cost_rs"],
-                "best_distance_km": best["distance_km"],
-                "best_penalty_rs": best["penalty_rs"],
-                "best_ontime_pct": best["ontime_pct"],
-                "best_algorithm": best["heuristic"],
-                "runtime_s": 0.0,
-            })
-    CONFIG.clear(); CONFIG.update(original)
+    try:
+        for variant_name, ablated_feature, overrides in variants:
+            CONFIG.clear()
+            CONFIG.update(copy.deepcopy(original))
+            CONFIG["enable_dbscan"] = True
+            for key, value in overrides.items():
+                CONFIG[key] = copy.deepcopy(value)
+            for seed in CONFIG["seeds"][:3]:
+                orders, d = make_instance(seed)
+                started = time.perf_counter()
+                candidate = candidate_runs(orders, d, seed)
+                runtime = time.perf_counter() - started
+                best = min(candidate, key=lambda row: row["cost_rs"])
+                rows.append({
+                    "variant": variant_name,
+                    "ablated_feature": ablated_feature or "none",
+                    "seed": seed,
+                    "best_cost_rs": best["cost_rs"],
+                    "best_distance_km": best["distance_km"],
+                    "best_penalty_rs": best["penalty_rs"],
+                    "best_ontime_pct": best["ontime_pct"],
+                    "best_split_strategy": best["split_strategy"],
+                    "best_algorithm": best["heuristic"],
+                    "n_candidates": len(candidate),
+                    "runtime_s": runtime,
+                })
+    finally:
+        CONFIG.clear()
+        CONFIG.update(original)
     return rows
 
 
@@ -477,7 +556,7 @@ def run_scalability_experiments():
 def metaheuristic_runs(orders, d, seed):
                                                                        
     rng = random.Random(seed + 80001)
-    initial = [make_routes(g, orders, d, "NN", seed) for g in make_splits(orders, d)[0]]
+    initial = [make_routes(g, orders, d, "NN", seed) for g in make_splits(orders, d)[0][1]]
     def fit(routes): return route_solution_stats(routes, orders, d, seed)[0]
     def best_route_cost(route):
         return min(score_route(route, v, orders, d, seed)[0] for v in FLEET)
@@ -787,7 +866,7 @@ def ortools_baseline(orders, d, seed, seconds=None):
 
     model.Minimize(sum(objective_terms))
 
-    initial_groups = make_splits(orders, d)[0]
+    initial_groups = make_splits(orders, d)[0][1]
     initial_routes = [make_routes(group, orders, d, "NN", seed) for group in initial_groups]
     initial_cost, initial_assignment, _ = assign_vehicles(initial_routes, orders, d, seed)
     if math.isfinite(initial_cost):
@@ -977,7 +1056,7 @@ def main():
                                    for name in ("ALNS", "Genetic Algorithm", "Tabu Search")},
                "ablation": {
                    variant: {key: summarize_stats([r for r in ablation_rows if r["variant"] == variant], key)
-                             for key in ("best_cost_rs", "best_distance_km", "best_penalty_rs", "best_ontime_pct")}
+                             for key in ("best_cost_rs", "best_distance_km", "best_penalty_rs", "best_ontime_pct", "runtime_s", "n_candidates")}
                    for variant in sorted({r["variant"] for r in ablation_rows})
                },
                "scalability": {
